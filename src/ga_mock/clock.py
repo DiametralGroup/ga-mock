@@ -31,7 +31,7 @@ class Horloge:
 horloge = Horloge()
 
 
-def _fuseau_paris(utc: datetime) -> timezone:
+def fuseau_paris(utc: datetime) -> timezone:
     """Règle simplifiée reprise de boondmanager-mock : avril-octobre = +02:00,
     sinon +01:00. Fausse de quelques jours autour des bascules DST réelles —
     assumé : aucune métrique du mock ne dépend de l'heure exacte de bascule."""
@@ -40,7 +40,7 @@ def _fuseau_paris(utc: datetime) -> timezone:
 
 def virtual_now() -> datetime:
     utc = (ANCRE + timedelta(seconds=horloge.offset_secondes)).astimezone(UTC)
-    return utc.astimezone(_fuseau_paris(utc))
+    return utc.astimezone(fuseau_paris(utc))
 
 
 def virtual_today() -> date:
