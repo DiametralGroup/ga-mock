@@ -1,10 +1,10 @@
 """Injection de pannes + plan de contrôle /__admin."""
 
 import inspect
+import sys
 import time
 
 import ga_mock
-import ga_mock.app as app_module
 from tests.conftest import ADMIN
 
 CHEMIN = "/v1beta/properties/424242001:runReport"
@@ -31,7 +31,9 @@ def test_montage_conditionnel_atteste_dans_la_source():
     """Le contrat est que /__admin est ABSENT quand désactivé — pas monté puis
     interdit. La suite tournant avec l'admin activé, on atteste le mécanisme
     dans la source, comme boondmanager-mock."""
-    assert "if settings.admin_enabled:" in inspect.getsource(app_module)
+    # sys.modules et non `ga_mock.app` : l'attribut est réassigné vers
+    # l'instance FastAPI par le __init__ du paquet, le module reste ici.
+    assert "if settings.admin_enabled:" in inspect.getsource(sys.modules["ga_mock.app"])
 
 
 def test_rate_limit_apres_seuil(client, bearer):
