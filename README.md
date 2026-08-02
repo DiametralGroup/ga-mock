@@ -18,7 +18,7 @@ GA4 is tricky.
 ## Start in one command
 
 ```bash
-docker run -p 8012:8000 -e GA_MOCK_ADMIN_ENABLED=true ghcr.io/littlebigcode/ga-mock:latest
+docker run -p 8013:8000 -e GA_MOCK_ADMIN_ENABLED=true ghcr.io/littlebigcode/ga-mock:latest
 ```
 
 or from a checkout: `docker compose up --build` (same, via `make up`), or
@@ -34,7 +34,7 @@ The standard service-account JSON (with the fake PEM, `token_uri` rewritten to
 this server) is served out-of-contract:
 
 ```bash
-curl -s http://localhost:8012/__fixtures/service-account.json
+curl -s http://localhost:8013/__fixtures/service-account.json
 ```
 
 Exchange a signed assertion for a bearer (this literal assertion is valid
@@ -42,8 +42,8 @@ against the default configuration — the virtual clock is anchored, so it does
 not expire until you advance the clock):
 
 ```bash
-ASSERTION='eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiaW5zaWdodHMzNjBAYm9yZWFsLWNvbnNlaWwtbW9jay5pYW0uZ3NlcnZpY2VhY2NvdW50LmV4YW1wbGUiLCAic2NvcGUiOiAiaHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9hbmFseXRpY3MucmVhZG9ubHkiLCAiYXVkIjogImh0dHA6Ly9sb2NhbGhvc3Q6ODAxMi90b2tlbiIsICJpYXQiOiAxNzg0MTE4NjAwLCAiZXhwIjogMTc4NDEyMjIwMH0.F4K86AxY1-xvUHZFsk1hYBj2hxrZmtDSlC9BeX8y2Jb3hiUuV5ry9twxca36ZkDdsqB6yCKjLvRLKnyuQ-c8ePlpbUlMuXurQSsP4amhYaPYEtyBrJ6DrmlAdBaLELNDgsidMx5pC2e8fgfK04-JUQa_ne__dhWSMWBi-wUAc76drX06Mugtem7UD8zZGrp5RaY8l_m2sVfbgmFxy6kRDj7i3UJwyJQBew17dK8mGjriLsZLeRcAA7nIlksYDkKz1K4-x0szo1viUAxXstbt6jyy-77EHkUuWDgb-9TIO7hIsn1ZJbGarDohtpYfYg6MqJroy-t2Jt5VjLvg30FZHQ'
-TOKEN=$(curl -s -X POST http://localhost:8012/token \
+ASSERTION='eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiaW5zaWdodHMzNjBAYm9yZWFsLWNvbnNlaWwtbW9jay5pYW0uZ3NlcnZpY2VhY2NvdW50LmV4YW1wbGUiLCAic2NvcGUiOiAiaHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9hbmFseXRpY3MucmVhZG9ubHkiLCAiYXVkIjogImh0dHA6Ly9sb2NhbGhvc3Q6ODAxMy90b2tlbiIsICJpYXQiOiAxNzg0MTE4NjAwLCAiZXhwIjogMTc4NDEyMjIwMH0.h0EqNKmZCXyMPkTBj561viFR81FprCmWhkMnTgpDN96Q_hPx7-R6anqtaVtKXRYvpp2reaMB29DgVDs8Rb486G73xQ1AdoUMtDwPrTTdsu4p-SH5QOWQSyCdr3xGWqal1n5PMslp6hwBorC60wM5uLgPIwlhkI4DvcpvnPtdjH8t3H-DNJxPRpxmEFBn_cpBzV1aVq5sQ_eFfJxEOZ43eindbdaSDTJt0UdChn3HjmYlFUCPba1MebHV05UXxZwIl0rEgQvVv295Ptd85d7rr5AfFGX8xIZuyMxtzRGkm_kQ_h_OSXEjBcfECXLK40O_uyUIWHLK2hNGuIRznANOgA'
+TOKEN=$(curl -s -X POST http://localhost:8013/token \
   -d "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
   -d "assertion=$ASSERTION" | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
 ```
@@ -58,7 +58,7 @@ uv run python -c "from ga_mock import build_assertion; print(build_assertion())"
 Run a report:
 
 ```bash
-curl -s -X POST "http://localhost:8012/v1beta/properties/424242001:runReport" \
+curl -s -X POST "http://localhost:8013/v1beta/properties/424242001:runReport" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"dateRanges":[{"startDate":"7daysAgo","endDate":"today"}],
        "dimensions":[{"name":"date"}],
@@ -68,7 +68,7 @@ curl -s -X POST "http://localhost:8012/v1beta/properties/424242001:runReport" \
 Control plane (when `GA_MOCK_ADMIN_ENABLED=true`):
 
 ```bash
-curl -s -H "X-Mock-Admin-Token: mock-admin-token" http://localhost:8012/__admin/state
+curl -s -H "X-Mock-Admin-Token: mock-admin-token" http://localhost:8013/__admin/state
 ```
 
 Gotchas that are faithful on purpose: a missing bearer → `401 UNAUTHENTICATED`
@@ -141,7 +141,7 @@ boondmanager-mock) and only moves via:
 
 ```bash
 curl -s -X POST -H "X-Mock-Admin-Token: mock-admin-token" \
-  -d '{"advance_seconds": 86400}' http://localhost:8012/__admin/clock
+  -d '{"advance_seconds": 86400}' http://localhost:8013/__admin/clock
 ```
 
 Advancing the clock ages relative dates, freshness AND bearer expiry together
