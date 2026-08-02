@@ -27,7 +27,10 @@ from .auth import (
     fixture_service_account,
     valider_assertion,
 )
-from .errors import MESSAGE_401, erreur
+from .errors import MESSAGE_401, MESSAGE_403_PROPRIETE, erreur
+from .registry import metadata_payload
+from .report import executer_run_report
+from .settings import settings
 
 app = FastAPI(title="Google Analytics 4 mock", version="0.1.0", docs_url="/docs")
 
@@ -84,16 +87,56 @@ def fixture_sa(request: Request) -> JSONResponse:
     return JSONResponse(fixture_service_account(str(request.base_url).rstrip("/")))
 
 
+def _verifier_propriete(property_id: str, *, zero_admis: bool = False) -> JSONResponse | None:
+    """400 sur un identifiant non numérique, 403 sur une AUTRE propriété : le
+    jeton du mock n'a de droits que sur la propriété configurée — même
+    comportement qu'un compte de service réel au périmètre étroit."""
+    if not property_id.isdigit():
+        return erreur(400, f"Invalid property ID {property_id}.")
+    admis = {settings.property_id, "0"} if zero_admis else {settings.property_id}
+    if property_id not in admis:
+        return erreur(403, MESSAGE_403_PROPRIETE)
+    return None
+
+
+async def _corps_json(request: Request) -> dict[str, object] | JSONResponse:
+    try:
+        corps = await request.json()
+    except ValueError:
+        return erreur(400, "Invalid JSON payload received.")
+    if not isinstance(corps, dict):
+        return erreur(400, "Invalid JSON payload received.")
+    return corps
+
+
 # Le pattern « :verbe » du transcodage gRPC marche tel quel dans Starlette : le
 # littéral `:runReport` suit le paramètre dans le MÊME segment d'URL, et le
 # backtracking de la regex compilée sépare correctement les deux. Vérifié
 # empiriquement avant d'écrire la moindre logique dessus.
 @app.post("/v1beta/properties/{property_id}:runReport")
-def run_report(request: Request, property_id: str) -> JSONResponse:
-    """Stub des jalons A1/A2 — remplacé par le vrai pipeline au jalon A4."""
+async def run_report(request: Request, property_id: str) -> JSONResponse:
     if (refus := _verifier_bearer(request)) is not None:
         return refus
-    return erreur(501, f"runReport for properties/{property_id} is not implemented yet.")
+    if (refus := _verifier_propriete(property_id)) is not None:
+        return refus
+    corps = await _corps_json(request)
+    if isinstance(corps, JSONResponse):
+        return corps
+    return executer_run_report(corps)
+
+
+@app.get("/v1beta/properties/{property_id}/metadata")
+def metadata(request: Request, property_id: str) -> JSONResponse:
+    """L'auto-description de la propriété — générée DEPUIS le registre.
+
+    `properties/0/metadata` est admis, comme chez Google : le zéro désigne les
+    métadonnées communes à toutes les propriétés.
+    """
+    if (refus := _verifier_bearer(request)) is not None:
+        return refus
+    if (refus := _verifier_propriete(property_id, zero_admis=True)) is not None:
+        return refus
+    return JSONResponse(metadata_payload(property_id))
 
 
 @app.exception_handler(StarletteHTTPException)
