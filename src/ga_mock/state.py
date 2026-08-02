@@ -13,6 +13,7 @@ from datetime import date, timedelta
 from .clock import horloge, virtual_now
 from .dataset.sessions import Session, build_day
 from .errors import MESSAGE_429_HEURE, MESSAGE_429_JOUR, ErreurQuota
+from .injection import engine
 from .settings import settings
 
 
@@ -22,6 +23,10 @@ class MockState:
         self._jours: dict[date, tuple[Session, ...]] = {}
         self.quota_jour_consomme: int = 0
         self.quota_heure_consomme: int = 0
+        # UNE seule voie de construction : l'init passe par reset(), sinon le
+        # baseline d'injection de l'environnement ne serait appliqué qu'aux
+        # resets explicites et jamais au démarrage du conteneur.
+        self.reset()
 
     def consommer_quota(self, jetons: int) -> None:
         """Décompte des jetons de propriété — l'épuisement NATUREL produit la
@@ -74,6 +79,7 @@ class MockState:
         self.quota_jour_consomme = 0
         self.quota_heure_consomme = 0
         horloge.offset_secondes = 0.0
+        engine.reinitialiser()
 
 
 state = MockState()

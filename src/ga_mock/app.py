@@ -28,6 +28,7 @@ from .auth import (
     valider_assertion,
 )
 from .errors import MESSAGE_401, MESSAGE_403_PROPRIETE, ErreurQuota, erreur
+from .injection import engine
 from .registry import metadata_payload
 from .report import ErreurRequete, executer_run_report
 from .settings import settings
@@ -39,6 +40,23 @@ app = FastAPI(title="Google Analytics 4 mock", version="0.1.0", docs_url="/docs"
 def health() -> dict[str, str]:
     """Unauthenticated — it is a probe, not an API surface."""
     return {"status": "ok", "service": "ga-mock"}
+
+
+def _pre_traitement(request: Request) -> JSONResponse | None:
+    """Le point UNIQUE d'injection, évalué AVANT l'authentification : une
+    `auth_reject` doit pouvoir préempter un bearer valide, une `latency`
+    s'appliquer même à un appel token."""
+    chemin = request.url.path
+    engine.observer(chemin)
+    return engine.evaluer(chemin)
+
+
+def _resume_rapport(corps: dict[str, object]) -> dict[str, object]:
+    return {
+        cle: corps[cle]
+        for cle in ("dateRanges", "dimensions", "metrics", "limit", "offset")
+        if cle in corps
+    }
 
 
 def _verifier_bearer(request: Request) -> JSONResponse | None:
@@ -60,6 +78,8 @@ async def token(request: Request) -> JSONResponse:
     Starlette délègue les formulaires à python-multipart, et un corps
     urlencoded ne justifie pas d'élargir les dépendances runtime.
     """
+    if (panne := _pre_traitement(request)) is not None:
+        return panne
     brut = (await request.body()).decode("utf-8", errors="replace")
     champs = {cle: valeurs[-1] for cle, valeurs in parse_qs(brut, keep_blank_values=True).items()}
     if champs.get("grant_type") != GRANT_TYPE_JWT_BEARER:
@@ -115,6 +135,8 @@ async def _corps_json(request: Request) -> dict[str, object] | JSONResponse:
 # empiriquement avant d'écrire la moindre logique dessus.
 @app.post("/v1beta/properties/{property_id}:runReport")
 async def run_report(request: Request, property_id: str) -> JSONResponse:
+    if (panne := _pre_traitement(request)) is not None:
+        return panne
     if (refus := _verifier_bearer(request)) is not None:
         return refus
     if (refus := _verifier_propriete(property_id)) is not None:
@@ -122,6 +144,11 @@ async def run_report(request: Request, property_id: str) -> JSONResponse:
     corps = await _corps_json(request)
     if isinstance(corps, JSONResponse):
         return corps
+    engine.noter_corps(request.url.path, _resume_rapport(corps))
+    return _executer_protege(corps)
+
+
+def _executer_protege(corps: dict[str, object]) -> JSONResponse:
     try:
         return JSONResponse(executer_run_report(corps))
     except ErreurRequete as exc:
@@ -154,6 +181,8 @@ async def batch_run_reports(request: Request, property_id: str) -> JSONResponse:
     """≤ 5 sous-rapports ; l'auth, la propriété et le JSON se contrôlent UNE
     fois au niveau du lot, puis chaque sous-rapport traverse le pipeline
     complet — une sous-requête invalide fait échouer tout le lot."""
+    if (panne := _pre_traitement(request)) is not None:
+        return panne
     if (refus := _verifier_bearer(request)) is not None:
         return refus
     if (refus := _verifier_propriete(property_id)) is not None:
@@ -161,6 +190,12 @@ async def batch_run_reports(request: Request, property_id: str) -> JSONResponse:
     corps = await _corps_json(request)
     if isinstance(corps, JSONResponse):
         return corps
+    demandes = corps.get("requests")
+    if isinstance(demandes, list):
+        engine.noter_corps(
+            request.url.path,
+            {"requests": [_resume_rapport(d) for d in demandes if isinstance(d, dict)]},
+        )
     return _executer_batch(corps)
 
 
@@ -171,6 +206,8 @@ def metadata(request: Request, property_id: str) -> JSONResponse:
     `properties/0/metadata` est admis, comme chez Google : le zéro désigne les
     métadonnées communes à toutes les propriétés.
     """
+    if (panne := _pre_traitement(request)) is not None:
+        return panne
     if (refus := _verifier_bearer(request)) is not None:
         return refus
     if (refus := _verifier_propriete(property_id, zero_admis=True)) is not None:
@@ -191,3 +228,12 @@ async def _erreur_http(request: Request, exc: StarletteHTTPException) -> JSONRes
     if exc.status_code == 405:
         return erreur(405, f"Method {request.method} is not allowed on {request.url.path}.")
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+# Monté SEULEMENT si activé : le plan de contrôle est ABSENT (pas simplement
+# interdit) quand GA_MOCK_ADMIN_ENABLED ne le demande pas — il n'apparaît ni
+# dans les routes ni dans le contrat OpenAPI publié.
+if settings.admin_enabled:
+    from .admin import router as admin_router
+
+    app.include_router(admin_router)

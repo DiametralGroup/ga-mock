@@ -10,7 +10,8 @@ L'application que la stack interroge EST celle que les tests exercent.
 from .app import app
 from .auth import build_assertion
 from .clock import virtual_now
+from .injection import engine
 from .settings import settings
 from .state import state
 
-__all__ = ["app", "build_assertion", "settings", "state", "virtual_now"]
+__all__ = ["app", "build_assertion", "engine", "settings", "state", "virtual_now"]
