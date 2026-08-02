@@ -8,6 +8,7 @@ zéro finissent par diverger.
 
 from __future__ import annotations
 
+from .clock import horloge
 from .settings import settings
 
 
@@ -20,10 +21,12 @@ class MockState:
 
         `seed` explicite (venu de /__admin/reset) prime sur l'environnement ;
         sans lui on revient à la configuration de déploiement, pas à un état
-        magique mémorisé.
+        magique mémorisé. L'horloge virtuelle fait partie de l'état : un reset
+        ramène aussi le temps à l'ancre.
         """
         settings.reload()
         self.seed = settings.seed if seed is None else seed
+        horloge.offset_secondes = 0.0
 
 
 state = MockState()

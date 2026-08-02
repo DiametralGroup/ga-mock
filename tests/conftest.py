@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 import ga_mock
 
 ADMIN = {"X-Mock-Admin-Token": "mock-admin-token"}
+GRANT = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 
 
 @pytest.fixture()
@@ -23,3 +24,14 @@ def client():
     ga_mock.state.reset()
     yield c
     ga_mock.state.reset()
+
+
+@pytest.fixture()
+def bearer(client):
+    """En-tête Authorization prêt à l'emploi — le flux token COMPLET, pas un
+    passe-droit : si /token casse, toute la suite le voit immédiatement."""
+    reponse = client.post(
+        "/token", data={"grant_type": GRANT, "assertion": ga_mock.build_assertion()}
+    )
+    assert reponse.status_code == 200
+    return {"Authorization": f"Bearer {reponse.json()['access_token']}"}

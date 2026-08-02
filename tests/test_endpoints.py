@@ -7,10 +7,10 @@ def test_health_public(client):
     assert reponse.json() == {"status": "ok", "service": "ga-mock"}
 
 
-def test_pattern_deux_points_capture_la_propriete(client):
+def test_pattern_deux_points_capture_la_propriete(client, bearer):
     """Le littéral `:runReport` après {property_id} doit router — et le
     paramètre doit contenir l'identifiant SANS le suffixe."""
-    reponse = client.post("/v1beta/properties/424242001:runReport")
+    reponse = client.post("/v1beta/properties/424242001:runReport", headers=bearer)
     assert reponse.status_code == 501
     assert "properties/424242001" in reponse.json()["error"]["message"]
 

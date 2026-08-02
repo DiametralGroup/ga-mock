@@ -1,0 +1,64 @@
+"""Bi-clé RSA-2048 FACTICE, committée en toute connaissance de cause.
+
+Elle n'authentifie qu'un mock : sa publication est voulue, c'est elle qui
+permet aux consommateurs (tests insights360, .env de dev) de signer des
+assertions valides sans infrastructure de secrets. Générée par
+scripts/generate_keypair.py — la régénérer invalide les copies faites chez
+les consommateurs.
+"""
+
+E = 65537
+
+N = int(
+    "ce2d411a4edd36c67040ad97b1f256cd77704f291666298b0161105211263f65a3f540e796825c28e067"
+    "65de2bf48fbfe6b9173edc61051f1a3ee9f888babfb506874f5b77678bc5c8bd86f2491a4ab41fb895e5"
+    "95739f76d9067f4544a862205c1c882308cafa19b359e516f5449f868fa2f9d92f6e73b7664d0e1d7d13"
+    "2ac21cd739e5815ef901cd99c19e3b4c9a5807772f67fa75f79f744e2261b26ae0475aada250922a538b"
+    "535ce02cfac6593414bc02bc9a4a9fdd1318fa4fb72de010e8f477032bcbcade5581bb6844e11c8d1bc8"
+    "0950f01d1a7b286ff31496d6761ed244ea554189903d409fb2baa5c87f65e6d0cc3bba46b6413a9a0646"
+    "5e90bc8d",
+    16,
+)
+
+D = int(
+    "5bc23122c8b1307074032a5b60e09391319ef07177ee8c45b92bda94f2c082113ce80c7bafedc482ccb8"
+    "e27c7118e5e4a14d3d0faa4338f366af54057794ac94670d33236838d3695cb5cb1a15e97765d1112d81"
+    "9d3bcad10e6e687b5ff785f469d15397123c83bedffb52fe3aef7b21b1bb67aa6204571d793afadc54e4"
+    "2ca8de658d1d25b63c23cd3ac801779a03992b39fca3037a36dc1d231b05c7e6deaf70d68889c998fcfe"
+    "a6ac55e29fa8171d52dc5e63308fed61dba12ef0683036cfc29f0a93e7aba1e0980f57e93e182db6e178"
+    "4d3a0240b8f961aebecf40bccd36f1a4007b25407a6e92b7eba33fcfe1ee410a2ce6de08f17898827121"
+    "e427767",
+    16,
+)
+
+PRIVATE_KEY_ID = "c615af8ebfddc58c7454bbdef297dbab7271f5cf"
+
+PEM_PRIVE = """-----BEGIN PRIVATE KEY-----
+MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDOLUEaTt02xnBA
+rZex8lbNd3BPKRZmKYsBYRBSESY/ZaP1QOeWglwo4Gdl3iv0j7/muRc+3GEFHxo+
+6fiIur+1BodPW3dni8XIvYbySRpKtB+4leWVc5922QZ/RUSoYiBcHIgjCMr6GbNZ
+5Rb1RJ+Gj6L52S9uc7dmTQ4dfRMqwhzXOeWBXvkBzZnBnjtMmlgHdy9n+nX3n3RO
+ImGyauBHWq2iUJIqU4tTXOAs+sZZNBS8AryaSp/dExj6T7ct4BDo9HcDK8vK3lWB
+u2hE4RyNG8gJUPAdGnsob/MUltZ2HtJE6lVBiZA9QJ+yuqXIf2Xm0Mw7uka2QTqa
+BkZekLyNAgMBAAECggEABbwjEiyLEwcHQDKltg4JORMZ7wcXfujEW5K9qU8sCCET
+zoDHuv7cSCzLjifHEY5eShTT0PqkM482avVAV3lKyUZw0zI2g402lctcsaFel3Zd
+ERLYGdO8rRDm5oe1/3hfRp0VOXEjyDvt/7Uv4673shsbtnqmIEVx15OvrcVOQsqN
+5ljR0ltjwjzTrIAXeaA5krOfyjA3o23B0jGwXH5t6vcNaIicmY/P6mrFXin6gXHV
+LcXmMwj+1h26Eu8GgwNs/CnwqT56uh4JgPV+k+GC224XhNOgJAuPlhrr7PQLzNNv
+GkAHslQHpukrfroz/P4e5BCizm3gjxeJiCcSHkJ3ZwKBgQDqY7tYlb4eWwahaEV6
+gAoTNrXHbUtvDND5APrrZhQAZAYL+ycYdNjc7kti9P/IRyyHuYFWoGgXoLnZSKmT
+f/qi5IzyWYbUknpgI3gu7hdkmbgw7s/otbbP8Wdg+O7Iruu9QsdxE0+pbcTMhEu/
+AURjxNRHGB/h9/RFhsVyButeQwKBgQDhL56DnIsMJsriKV4P0POGwjdqzHEG84ks
+rI2QaJR7aHTm3buRitrVZxoN83CenFq9Uba+Nzn0IGbMFoMZ9epcV2UJ1jI+l9Dm
+tY6ZhXYcxg9cjgU4Gh+Sa8W+fo5NtVTvrqF5mMxID23BhFeROENZZKAgQLmMN4jf
+jfv8y4eU7wKBgQCsqBKVSpjlm3/i3gBwIGlLhf2ZjfUHNJWrFwG+7U7Giue5Y6SE
+623kMNTvbDIOwf8Xa5rOyRJkdUzxtgjUUm26GEmLLE+ZvtzOfNJHH7Ozs1hvEzur
+3E9yFg1k7XpX8iJNJCfuL5962xUg4kM5zCEorREB3c9+kTwrCv/e4yH2KQKBgQC5
+TeBZWXaq1zlZBsWaqk3b9PJ5dicEm1+kXZJY5VZaf0jDum9hgyw1NBSiqlNgkjWx
+WQ7SVMvh8s/k3hmgQVdMCbbhc1wBWhjT4U+pUcQyRWHavhvZYNXePcWJzsb3d2Kf
+ocrLL0vbeKbO+kK9A9mYNE/4eoq1sfV2UXatPiciDQKBgQCJKSP4K7o0vEf0CFa0
+o6MlIq2brdkNFk5j6OaBjhmX+AWC1ZSbkXvjQad1iEShgMq9IR1Hh8ZwTyRMoXF/
+gyrbD4oKKb0GbUC5GY6ypykMrv5mnQgCceBzcWVCPYSwxKmMV6WZAI+gUXy6HIdJ
+0qpNyGEIrTXE1RJlDdR8PLIUwQ==
+-----END PRIVATE KEY-----
+"""
