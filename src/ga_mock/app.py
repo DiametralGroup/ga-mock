@@ -13,6 +13,8 @@ chemins ne se recouvrent pas.
 
 from __future__ import annotations
 
+from copy import deepcopy
+from typing import Any
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
@@ -29,6 +31,17 @@ from .auth import (
 )
 from .errors import MESSAGE_401, MESSAGE_403_PROPRIETE, ErreurQuota, erreur
 from .injection import engine
+from .models import (
+    REPONSES_ERREUR,
+    BatchRunReportsRequest,
+    BatchRunReportsResponse,
+    MetadataResponse,
+    OAuthErrorResponse,
+    RunReportRequest,
+    RunReportResponse,
+    TokenResponse,
+    corps_requete,
+)
 from .registry import metadata_payload
 from .report import ErreurRequete, executer_run_report
 from .settings import settings
@@ -70,7 +83,18 @@ def _verifier_bearer(request: Request) -> JSONResponse | None:
     return erreur(401, MESSAGE_401)
 
 
-@app.post("/token", tags=["oauth2"])
+@app.post(
+    "/token",
+    tags=["oauth2"],
+    response_model=TokenResponse,
+    responses={
+        400: {
+            "model": OAuthErrorResponse,
+            "description": "unsupported_grant_type / invalid_grant / invalid_scope",
+        }
+    },
+    summary="Service-account JWT-bearer token exchange",
+)
 async def token(request: Request) -> JSONResponse:
     """Endpoint oauth2.googleapis.com/token — flux service account JWT-bearer.
 
@@ -133,7 +157,13 @@ async def _corps_json(request: Request) -> dict[str, object] | JSONResponse:
 # littéral `:runReport` suit le paramètre dans le MÊME segment d'URL, et le
 # backtracking de la regex compilée sépare correctement les deux. Vérifié
 # empiriquement avant d'écrire la moindre logique dessus.
-@app.post("/v1beta/properties/{property_id}:runReport")
+@app.post(
+    "/v1beta/properties/{property_id}:runReport",
+    response_model=RunReportResponse,
+    responses=REPONSES_ERREUR,
+    openapi_extra=corps_requete(RunReportRequest),
+    summary="Run a report",
+)
 async def run_report(request: Request, property_id: str) -> JSONResponse:
     if (panne := _pre_traitement(request)) is not None:
         return panne
@@ -176,7 +206,13 @@ def _executer_batch(corps: dict[str, object]) -> JSONResponse:
     return JSONResponse({"reports": rapports, "kind": "analyticsData#batchRunReports"})
 
 
-@app.post("/v1beta/properties/{property_id}:batchRunReports")
+@app.post(
+    "/v1beta/properties/{property_id}:batchRunReports",
+    response_model=BatchRunReportsResponse,
+    responses=REPONSES_ERREUR,
+    openapi_extra=corps_requete(BatchRunReportsRequest),
+    summary="Run up to 5 reports in one call",
+)
 async def batch_run_reports(request: Request, property_id: str) -> JSONResponse:
     """≤ 5 sous-rapports ; l'auth, la propriété et le JSON se contrôlent UNE
     fois au niveau du lot, puis chaque sous-rapport traverse le pipeline
@@ -199,7 +235,12 @@ async def batch_run_reports(request: Request, property_id: str) -> JSONResponse:
     return _executer_batch(corps)
 
 
-@app.get("/v1beta/properties/{property_id}/metadata")
+@app.get(
+    "/v1beta/properties/{property_id}/metadata",
+    response_model=MetadataResponse,
+    responses=REPONSES_ERREUR,
+    summary="Dimensions and metrics available on the property",
+)
 def metadata(request: Request, property_id: str) -> JSONResponse:
     """L'auto-description de la propriété — générée DEPUIS le registre.
 
@@ -237,3 +278,72 @@ if settings.admin_enabled:
     from .admin import router as admin_router
 
     app.include_router(admin_router)
+
+
+# ── Contrat publié ───────────────────────────────────────────────────────────
+
+
+def _references(objet: Any, refs: set[str]) -> None:
+    if isinstance(objet, dict):
+        ref = objet.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/components/schemas/"):
+            refs.add(ref.rsplit("/", 1)[1])
+        for valeur in objet.values():
+            _references(valeur, refs)
+    elif isinstance(objet, list):
+        for valeur in objet:
+            _references(valeur, refs)
+
+
+def _elaguer_schemas_orphelins(schema: dict[str, Any]) -> None:
+    """Fermeture transitive des $ref depuis les chemins gardés : retirer un
+    chemin retire ses formes, y compris celles qu'il était seul à référencer."""
+    composants = schema.get("components", {}).get("schemas", {})
+    utiles: set[str] = set()
+    _references(schema["paths"], utiles)
+    while True:
+        avant = len(utiles)
+        for nom in list(utiles):
+            if nom in composants:
+                _references(composants[nom], utiles)
+        if len(utiles) == avant:
+            break
+    restants = {nom: composants[nom] for nom in sorted(utiles) if nom in composants}
+    if restants:
+        schema["components"]["schemas"] = restants
+    else:
+        schema.pop("components", None)
+
+
+def contract_openapi() -> dict[str, Any]:
+    """Le contrat publié : les chemins du VENDEUR uniquement.
+
+    /health, /__fixtures et /__admin sont des affordances du mock — les faire
+    entrer dans le contrat serait mentir sur la surface Google. Les réponses
+    422 auto-documentées par FastAPI sont retirées pour la même raison : le
+    vendeur répond 400 INVALID_ARGUMENT, jamais un HTTPValidationError.
+    """
+    schema = deepcopy(app.openapi())
+    schema["info"] = {
+        "title": "Google Analytics Data API v1beta — ga-mock contract",
+        "version": app.version,
+        "description": (
+            "Surface reproduced by ga-mock: the OAuth2 service-account token "
+            "exchange and the GA4 Data API v1beta core (runReport, "
+            "batchRunReports, metadata). Sources of truth: the public GA4 Data "
+            "API v1beta REST reference and its discovery document. Fields "
+            "marked x-ga-confidence: unverified are registered in "
+            "docs/UNVERIFIED-FIELDS.md."
+        ),
+    }
+    schema["paths"] = {
+        chemin: operations
+        for chemin, operations in schema.get("paths", {}).items()
+        if chemin == "/token" or chemin.startswith("/v1beta/")
+    }
+    for operations in schema["paths"].values():
+        for operation in operations.values():
+            if isinstance(operation, dict):
+                operation.get("responses", {}).pop("422", None)
+    _elaguer_schemas_orphelins(schema)
+    return schema

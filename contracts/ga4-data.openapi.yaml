@@ -1,0 +1,1050 @@
+openapi: 3.1.0
+info:
+  title: Google Analytics Data API v1beta — ga-mock contract
+  version: 0.1.0
+  description: 'Surface reproduced by ga-mock: the OAuth2 service-account token exchange
+    and the GA4 Data API v1beta core (runReport, batchRunReports, metadata). Sources
+    of truth: the public GA4 Data API v1beta REST reference and its discovery document.
+    Fields marked x-ga-confidence: unverified are registered in docs/UNVERIFIED-FIELDS.md.'
+paths:
+  /token:
+    post:
+      tags:
+      - oauth2
+      summary: Service-account JWT-bearer token exchange
+      description: 'Endpoint oauth2.googleapis.com/token — flux service account JWT-bearer.
+
+
+        Le corps est parsé à la main (urllib) plutôt que via `request.form()` :
+
+        Starlette délègue les formulaires à python-multipart, et un corps
+
+        urlencoded ne justifie pas d''élargir les dépendances runtime.'
+      operationId: token_token_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          description: unsupported_grant_type / invalid_grant / invalid_scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+  /v1beta/properties/{property_id}:runReport:
+    post:
+      summary: Run a report
+      operationId: run_report_v1beta_properties__property_id__runReport_post
+      parameters:
+      - name: property_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Property Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunReportResponse'
+        '400':
+          description: INVALID_ARGUMENT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: UNAUTHENTICATED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: PERMISSION_DENIED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: RESOURCE_EXHAUSTED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $defs:
+                BetweenFilter:
+                  properties:
+                    fromValue:
+                      $ref: '#/$defs/NumericValue'
+                    toValue:
+                      $ref: '#/$defs/NumericValue'
+                  required:
+                  - fromValue
+                  - toValue
+                  title: BetweenFilter
+                  type: object
+                DateRange:
+                  properties:
+                    startDate:
+                      description: YYYY-MM-DD, today, yesterday or NdaysAgo.
+                      title: Startdate
+                      type: string
+                    endDate:
+                      description: YYYY-MM-DD, today, yesterday or NdaysAgo.
+                      title: Enddate
+                      type: string
+                    name:
+                      anyOf:
+                      - type: string
+                      - type: 'null'
+                      title: Name
+                  required:
+                  - startDate
+                  - endDate
+                  title: DateRange
+                  type: object
+                DimensionOrderBy:
+                  properties:
+                    dimensionName:
+                      title: Dimensionname
+                      type: string
+                    orderType:
+                      default: ALPHANUMERIC
+                      title: Ordertype
+                      type: string
+                  required:
+                  - dimensionName
+                  title: DimensionOrderBy
+                  type: object
+                DimensionSpec:
+                  properties:
+                    name:
+                      title: Name
+                      type: string
+                  required:
+                  - name
+                  title: DimensionSpec
+                  type: object
+                FilterExpression:
+                  properties:
+                    andGroup:
+                      anyOf:
+                      - $ref: '#/$defs/FilterExpressionList'
+                      - type: 'null'
+                    orGroup:
+                      anyOf:
+                      - $ref: '#/$defs/FilterExpressionList'
+                      - type: 'null'
+                    notExpression:
+                      anyOf:
+                      - $ref: '#/$defs/FilterExpression'
+                      - type: 'null'
+                    filter:
+                      anyOf:
+                      - $ref: '#/$defs/FilterLeaf'
+                      - type: 'null'
+                  title: FilterExpression
+                  type: object
+                FilterExpressionList:
+                  properties:
+                    expressions:
+                      default: []
+                      items:
+                        $ref: '#/$defs/FilterExpression'
+                      title: Expressions
+                      type: array
+                  title: FilterExpressionList
+                  type: object
+                FilterLeaf:
+                  properties:
+                    fieldName:
+                      title: Fieldname
+                      type: string
+                    stringFilter:
+                      anyOf:
+                      - $ref: '#/$defs/StringFilter'
+                      - type: 'null'
+                    inListFilter:
+                      anyOf:
+                      - $ref: '#/$defs/InListFilter'
+                      - type: 'null'
+                    numericFilter:
+                      anyOf:
+                      - $ref: '#/$defs/NumericFilter'
+                      - type: 'null'
+                    betweenFilter:
+                      anyOf:
+                      - $ref: '#/$defs/BetweenFilter'
+                      - type: 'null'
+                  required:
+                  - fieldName
+                  title: FilterLeaf
+                  type: object
+                InListFilter:
+                  properties:
+                    values:
+                      default: []
+                      items:
+                        type: string
+                      title: Values
+                      type: array
+                    caseSensitive:
+                      default: false
+                      title: Casesensitive
+                      type: boolean
+                  title: InListFilter
+                  type: object
+                MetricOrderBy:
+                  properties:
+                    metricName:
+                      title: Metricname
+                      type: string
+                  required:
+                  - metricName
+                  title: MetricOrderBy
+                  type: object
+                MetricSpec:
+                  properties:
+                    name:
+                      title: Name
+                      type: string
+                  required:
+                  - name
+                  title: MetricSpec
+                  type: object
+                NumericFilter:
+                  properties:
+                    operation:
+                      title: Operation
+                      type: string
+                    value:
+                      $ref: '#/$defs/NumericValue'
+                  required:
+                  - operation
+                  - value
+                  title: NumericFilter
+                  type: object
+                NumericValue:
+                  properties:
+                    int64Value:
+                      anyOf:
+                      - type: string
+                      - type: 'null'
+                      description: int64 carried as a string.
+                      title: Int64Value
+                    doubleValue:
+                      anyOf:
+                      - type: number
+                      - type: 'null'
+                      title: Doublevalue
+                  title: NumericValue
+                  type: object
+                OrderBy:
+                  properties:
+                    desc:
+                      default: false
+                      title: Desc
+                      type: boolean
+                    metric:
+                      anyOf:
+                      - $ref: '#/$defs/MetricOrderBy'
+                      - type: 'null'
+                    dimension:
+                      anyOf:
+                      - $ref: '#/$defs/DimensionOrderBy'
+                      - type: 'null'
+                  title: OrderBy
+                  type: object
+                StringFilter:
+                  properties:
+                    matchType:
+                      default: EXACT
+                      title: Matchtype
+                      type: string
+                    value:
+                      default: ''
+                      title: Value
+                      type: string
+                    caseSensitive:
+                      default: false
+                      title: Casesensitive
+                      type: boolean
+                  title: StringFilter
+                  type: object
+              properties:
+                dateRanges:
+                  default: []
+                  description: 1 to 4 ranges.
+                  items:
+                    $ref: '#/$defs/DateRange'
+                  title: Dateranges
+                  type: array
+                dimensions:
+                  default: []
+                  description: Up to 9.
+                  items:
+                    $ref: '#/$defs/DimensionSpec'
+                  title: Dimensions
+                  type: array
+                metrics:
+                  default: []
+                  description: 1 to 10.
+                  items:
+                    $ref: '#/$defs/MetricSpec'
+                  title: Metrics
+                  type: array
+                dimensionFilter:
+                  anyOf:
+                  - $ref: '#/$defs/FilterExpression'
+                  - type: 'null'
+                metricFilter:
+                  anyOf:
+                  - $ref: '#/$defs/FilterExpression'
+                  - type: 'null'
+                  description: Applied AFTER aggregation, on requested metrics.
+                limit:
+                  anyOf:
+                  - type: integer
+                  - type: string
+                  - type: 'null'
+                  title: Limit
+                  x-ga-confidence: unverified
+                  x-ga-note: int64 accepted as number or string; over 250000 silently
+                    capped; 0 falls back to the 10000 default.
+                offset:
+                  anyOf:
+                  - type: integer
+                  - type: string
+                  - type: 'null'
+                  title: Offset
+                orderBys:
+                  default: []
+                  items:
+                    $ref: '#/$defs/OrderBy'
+                  title: Orderbys
+                  type: array
+                metricAggregations:
+                  default: []
+                  description: TOTAL, MAXIMUM and MINIMUM are supported.
+                  items:
+                    type: string
+                  title: Metricaggregations
+                  type: array
+                keepEmptyRows:
+                  default: false
+                  title: Keepemptyrows
+                  type: boolean
+                returnPropertyQuota:
+                  default: false
+                  title: Returnpropertyquota
+                  type: boolean
+              title: RunReportRequest
+              type: object
+  /v1beta/properties/{property_id}:batchRunReports:
+    post:
+      summary: Run up to 5 reports in one call
+      description: '≤ 5 sous-rapports ; l''auth, la propriété et le JSON se contrôlent
+        UNE
+
+        fois au niveau du lot, puis chaque sous-rapport traverse le pipeline
+
+        complet — une sous-requête invalide fait échouer tout le lot.'
+      operationId: batch_run_reports_v1beta_properties__property_id__batchRunReports_post
+      parameters:
+      - name: property_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Property Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchRunReportsResponse'
+        '400':
+          description: INVALID_ARGUMENT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: UNAUTHENTICATED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: PERMISSION_DENIED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: RESOURCE_EXHAUSTED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $defs:
+                BetweenFilter:
+                  properties:
+                    fromValue:
+                      $ref: '#/$defs/NumericValue'
+                    toValue:
+                      $ref: '#/$defs/NumericValue'
+                  required:
+                  - fromValue
+                  - toValue
+                  title: BetweenFilter
+                  type: object
+                DateRange:
+                  properties:
+                    startDate:
+                      description: YYYY-MM-DD, today, yesterday or NdaysAgo.
+                      title: Startdate
+                      type: string
+                    endDate:
+                      description: YYYY-MM-DD, today, yesterday or NdaysAgo.
+                      title: Enddate
+                      type: string
+                    name:
+                      anyOf:
+                      - type: string
+                      - type: 'null'
+                      title: Name
+                  required:
+                  - startDate
+                  - endDate
+                  title: DateRange
+                  type: object
+                DimensionOrderBy:
+                  properties:
+                    dimensionName:
+                      title: Dimensionname
+                      type: string
+                    orderType:
+                      default: ALPHANUMERIC
+                      title: Ordertype
+                      type: string
+                  required:
+                  - dimensionName
+                  title: DimensionOrderBy
+                  type: object
+                DimensionSpec:
+                  properties:
+                    name:
+                      title: Name
+                      type: string
+                  required:
+                  - name
+                  title: DimensionSpec
+                  type: object
+                FilterExpression:
+                  properties:
+                    andGroup:
+                      anyOf:
+                      - $ref: '#/$defs/FilterExpressionList'
+                      - type: 'null'
+                    orGroup:
+                      anyOf:
+                      - $ref: '#/$defs/FilterExpressionList'
+                      - type: 'null'
+                    notExpression:
+                      anyOf:
+                      - $ref: '#/$defs/FilterExpression'
+                      - type: 'null'
+                    filter:
+                      anyOf:
+                      - $ref: '#/$defs/FilterLeaf'
+                      - type: 'null'
+                  title: FilterExpression
+                  type: object
+                FilterExpressionList:
+                  properties:
+                    expressions:
+                      default: []
+                      items:
+                        $ref: '#/$defs/FilterExpression'
+                      title: Expressions
+                      type: array
+                  title: FilterExpressionList
+                  type: object
+                FilterLeaf:
+                  properties:
+                    fieldName:
+                      title: Fieldname
+                      type: string
+                    stringFilter:
+                      anyOf:
+                      - $ref: '#/$defs/StringFilter'
+                      - type: 'null'
+                    inListFilter:
+                      anyOf:
+                      - $ref: '#/$defs/InListFilter'
+                      - type: 'null'
+                    numericFilter:
+                      anyOf:
+                      - $ref: '#/$defs/NumericFilter'
+                      - type: 'null'
+                    betweenFilter:
+                      anyOf:
+                      - $ref: '#/$defs/BetweenFilter'
+                      - type: 'null'
+                  required:
+                  - fieldName
+                  title: FilterLeaf
+                  type: object
+                InListFilter:
+                  properties:
+                    values:
+                      default: []
+                      items:
+                        type: string
+                      title: Values
+                      type: array
+                    caseSensitive:
+                      default: false
+                      title: Casesensitive
+                      type: boolean
+                  title: InListFilter
+                  type: object
+                MetricOrderBy:
+                  properties:
+                    metricName:
+                      title: Metricname
+                      type: string
+                  required:
+                  - metricName
+                  title: MetricOrderBy
+                  type: object
+                MetricSpec:
+                  properties:
+                    name:
+                      title: Name
+                      type: string
+                  required:
+                  - name
+                  title: MetricSpec
+                  type: object
+                NumericFilter:
+                  properties:
+                    operation:
+                      title: Operation
+                      type: string
+                    value:
+                      $ref: '#/$defs/NumericValue'
+                  required:
+                  - operation
+                  - value
+                  title: NumericFilter
+                  type: object
+                NumericValue:
+                  properties:
+                    int64Value:
+                      anyOf:
+                      - type: string
+                      - type: 'null'
+                      description: int64 carried as a string.
+                      title: Int64Value
+                    doubleValue:
+                      anyOf:
+                      - type: number
+                      - type: 'null'
+                      title: Doublevalue
+                  title: NumericValue
+                  type: object
+                OrderBy:
+                  properties:
+                    desc:
+                      default: false
+                      title: Desc
+                      type: boolean
+                    metric:
+                      anyOf:
+                      - $ref: '#/$defs/MetricOrderBy'
+                      - type: 'null'
+                    dimension:
+                      anyOf:
+                      - $ref: '#/$defs/DimensionOrderBy'
+                      - type: 'null'
+                  title: OrderBy
+                  type: object
+                RunReportRequest:
+                  properties:
+                    dateRanges:
+                      default: []
+                      description: 1 to 4 ranges.
+                      items:
+                        $ref: '#/$defs/DateRange'
+                      title: Dateranges
+                      type: array
+                    dimensions:
+                      default: []
+                      description: Up to 9.
+                      items:
+                        $ref: '#/$defs/DimensionSpec'
+                      title: Dimensions
+                      type: array
+                    metrics:
+                      default: []
+                      description: 1 to 10.
+                      items:
+                        $ref: '#/$defs/MetricSpec'
+                      title: Metrics
+                      type: array
+                    dimensionFilter:
+                      anyOf:
+                      - $ref: '#/$defs/FilterExpression'
+                      - type: 'null'
+                    metricFilter:
+                      anyOf:
+                      - $ref: '#/$defs/FilterExpression'
+                      - type: 'null'
+                      description: Applied AFTER aggregation, on requested metrics.
+                    limit:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      - type: 'null'
+                      title: Limit
+                      x-ga-confidence: unverified
+                      x-ga-note: int64 accepted as number or string; over 250000 silently
+                        capped; 0 falls back to the 10000 default.
+                    offset:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      - type: 'null'
+                      title: Offset
+                    orderBys:
+                      default: []
+                      items:
+                        $ref: '#/$defs/OrderBy'
+                      title: Orderbys
+                      type: array
+                    metricAggregations:
+                      default: []
+                      description: TOTAL, MAXIMUM and MINIMUM are supported.
+                      items:
+                        type: string
+                      title: Metricaggregations
+                      type: array
+                    keepEmptyRows:
+                      default: false
+                      title: Keepemptyrows
+                      type: boolean
+                    returnPropertyQuota:
+                      default: false
+                      title: Returnpropertyquota
+                      type: boolean
+                  title: RunReportRequest
+                  type: object
+                StringFilter:
+                  properties:
+                    matchType:
+                      default: EXACT
+                      title: Matchtype
+                      type: string
+                    value:
+                      default: ''
+                      title: Value
+                      type: string
+                    caseSensitive:
+                      default: false
+                      title: Casesensitive
+                      type: boolean
+                  title: StringFilter
+                  type: object
+              properties:
+                requests:
+                  default: []
+                  description: 1 to 5 requests.
+                  items:
+                    $ref: '#/$defs/RunReportRequest'
+                  title: Requests
+                  type: array
+              title: BatchRunReportsRequest
+              type: object
+  /v1beta/properties/{property_id}/metadata:
+    get:
+      summary: Dimensions and metrics available on the property
+      description: 'L''auto-description de la propriété — générée DEPUIS le registre.
+
+
+        `properties/0/metadata` est admis, comme chez Google : le zéro désigne les
+
+        métadonnées communes à toutes les propriétés.'
+      operationId: metadata_v1beta_properties__property_id__metadata_get
+      parameters:
+      - name: property_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Property Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetadataResponse'
+        '400':
+          description: INVALID_ARGUMENT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: UNAUTHENTICATED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: PERMISSION_DENIED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: RESOURCE_EXHAUSTED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  schemas:
+    BatchRunReportsResponse:
+      properties:
+        reports:
+          items:
+            $ref: '#/components/schemas/RunReportResponse'
+          type: array
+          title: Reports
+          default: []
+        kind:
+          type: string
+          title: Kind
+          default: analyticsData#batchRunReports
+      type: object
+      title: BatchRunReportsResponse
+    DimensionHeader:
+      properties:
+        name:
+          type: string
+          title: Name
+      type: object
+      required:
+      - name
+      title: DimensionHeader
+    DimensionMetadata:
+      properties:
+        apiName:
+          type: string
+          title: Apiname
+        uiName:
+          type: string
+          title: Uiname
+        description:
+          type: string
+          title: Description
+        category:
+          type: string
+          title: Category
+        customDefinition:
+          type: boolean
+          title: Customdefinition
+          default: false
+      type: object
+      required:
+      - apiName
+      - uiName
+      - description
+      - category
+      title: DimensionMetadata
+    DimensionValue:
+      properties:
+        value:
+          type: string
+          title: Value
+      type: object
+      required:
+      - value
+      title: DimensionValue
+    ErrorResponse:
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorStatus'
+      type: object
+      required:
+      - error
+      title: ErrorResponse
+    ErrorStatus:
+      properties:
+        code:
+          type: integer
+          title: Code
+        message:
+          type: string
+          title: Message
+        status:
+          type: string
+          title: Status
+      type: object
+      required:
+      - code
+      - message
+      - status
+      title: ErrorStatus
+    MetadataResponse:
+      properties:
+        name:
+          type: string
+          title: Name
+        dimensions:
+          items:
+            $ref: '#/components/schemas/DimensionMetadata'
+          type: array
+          title: Dimensions
+          default: []
+        metrics:
+          items:
+            $ref: '#/components/schemas/MetricMetadata'
+          type: array
+          title: Metrics
+          default: []
+      type: object
+      required:
+      - name
+      title: MetadataResponse
+    MetricHeader:
+      properties:
+        name:
+          type: string
+          title: Name
+        type:
+          type: string
+          title: Type
+      type: object
+      required:
+      - name
+      - type
+      title: MetricHeader
+    MetricMetadata:
+      properties:
+        apiName:
+          type: string
+          title: Apiname
+        uiName:
+          type: string
+          title: Uiname
+        description:
+          type: string
+          title: Description
+        category:
+          type: string
+          title: Category
+        type:
+          type: string
+          title: Type
+        customDefinition:
+          type: boolean
+          title: Customdefinition
+          default: false
+      type: object
+      required:
+      - apiName
+      - uiName
+      - description
+      - category
+      - type
+      title: MetricMetadata
+    MetricValue:
+      properties:
+        value:
+          type: string
+          title: Value
+          description: Always serialized as a string (proto3 JSON).
+      type: object
+      required:
+      - value
+      title: MetricValue
+    OAuthErrorResponse:
+      properties:
+        error:
+          type: string
+          title: Error
+        error_description:
+          type: string
+          title: Error Description
+      type: object
+      required:
+      - error
+      - error_description
+      title: OAuthErrorResponse
+    PropertyQuota:
+      properties:
+        tokensPerDay:
+          $ref: '#/components/schemas/QuotaStatus'
+          x-ga-confidence: unverified
+          x-ga-note: flat 10-token cost per report in this mock
+        tokensPerHour:
+          $ref: '#/components/schemas/QuotaStatus'
+        concurrentRequests:
+          $ref: '#/components/schemas/QuotaStatus'
+        serverErrorsPerProjectPerHour:
+          $ref: '#/components/schemas/QuotaStatus'
+        potentiallyThresholdedRequestsPerHour:
+          $ref: '#/components/schemas/QuotaStatus'
+      type: object
+      required:
+      - tokensPerDay
+      - tokensPerHour
+      - concurrentRequests
+      - serverErrorsPerProjectPerHour
+      - potentiallyThresholdedRequestsPerHour
+      title: PropertyQuota
+    QuotaStatus:
+      properties:
+        consumed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Consumed
+          description: Omitted when zero (proto3).
+        remaining:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Remaining
+          description: Omitted when zero (proto3).
+      type: object
+      title: QuotaStatus
+    ResponseMetaData:
+      properties:
+        currencyCode:
+          type: string
+          title: Currencycode
+        timeZone:
+          type: string
+          title: Timezone
+      type: object
+      required:
+      - currencyCode
+      - timeZone
+      title: ResponseMetaData
+    Row:
+      properties:
+        dimensionValues:
+          items:
+            $ref: '#/components/schemas/DimensionValue'
+          type: array
+          title: Dimensionvalues
+          description: Omitted entirely when the report has no dimensions.
+          default: []
+        metricValues:
+          items:
+            $ref: '#/components/schemas/MetricValue'
+          type: array
+          title: Metricvalues
+          default: []
+      type: object
+      title: Row
+    RunReportResponse:
+      properties:
+        dimensionHeaders:
+          items:
+            $ref: '#/components/schemas/DimensionHeader'
+          type: array
+          title: Dimensionheaders
+          default: []
+        metricHeaders:
+          items:
+            $ref: '#/components/schemas/MetricHeader'
+          type: array
+          title: Metricheaders
+          default: []
+        rows:
+          items:
+            $ref: '#/components/schemas/Row'
+          type: array
+          title: Rows
+          description: Key ABSENT when there are no rows.
+          default: []
+        totals:
+          items:
+            $ref: '#/components/schemas/Row'
+          type: array
+          title: Totals
+          default: []
+          x-ga-confidence: unverified
+          x-ga-note: RESERVED_TOTAL on every regular dimension; computed BEFORE metricFilter
+        maximums:
+          items:
+            $ref: '#/components/schemas/Row'
+          type: array
+          title: Maximums
+          default: []
+        minimums:
+          items:
+            $ref: '#/components/schemas/Row'
+          type: array
+          title: Minimums
+          default: []
+        rowCount:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Rowcount
+          description: Pre-pagination count; key absent when zero.
+        metadata:
+          $ref: '#/components/schemas/ResponseMetaData'
+        propertyQuota:
+          anyOf:
+          - $ref: '#/components/schemas/PropertyQuota'
+          - type: 'null'
+        kind:
+          type: string
+          title: Kind
+          default: analyticsData#runReport
+      type: object
+      required:
+      - metadata
+      title: RunReportResponse
+    TokenResponse:
+      properties:
+        access_token:
+          type: string
+          title: Access Token
+        expires_in:
+          type: integer
+          title: Expires In
+          description: '3599: the issuance second is already spent.'
+        token_type:
+          type: string
+          title: Token Type
+          default: Bearer
+      type: object
+      required:
+      - access_token
+      - expires_in
+      title: TokenResponse
