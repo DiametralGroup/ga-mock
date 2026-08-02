@@ -38,6 +38,7 @@ UNVERIFIED_BEHAVIORS: tuple[str, ...] = (
     "aud-tolerant",
     "limit-zero-defaut",
     "position-dimension-daterange",
+    "fenetre-assertion-double-horloge",
 )
 
 

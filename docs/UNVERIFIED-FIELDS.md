@@ -75,6 +75,12 @@ propriété est LE moyen de purger ce registre.
 - `limit-zero-defaut` — `limit: 0` retombe sur le défaut 10000 ; au-delà de
   250000, plafonné EN SILENCE (comportement documenté par Google, wording du
   bord non attesté).
+- `fenetre-assertion-double-horloge` — La fenêtre iat/exp de l'assertion est
+  acceptée si elle est valide contre l'horloge VIRTUELLE (ancre du monde) OU
+  contre l'horloge RÉELLE : un vrai client signe avec l'heure réelle, les
+  assertions de test sont fabriquées contre l'ancre — exiger une seule
+  horloge rejetterait l'un des deux. Une assertion périmée échoue contre les
+  deux. Le vrai endpoint n'a évidemment qu'une horloge.
 - `position-dimension-daterange` — Avec 2 à 4 plages, la dimension implicite
   `dateRange` est ajoutée en DERNIÈRE position des en-têtes ; la position
   réelle n'est pas attestée.

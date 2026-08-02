@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import json
 import os
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -61,6 +62,15 @@ def _cle_bearer() -> bytes:
     return hashlib.sha256(b"ga-mock:bearer:" + settings.sa_email.encode()).digest()
 
 
+def _fenetre_valide(iat: int, exp: int, reference: int) -> bool:
+    return not (
+        iat > reference + TOLERANCE_SECONDES
+        or exp < reference - TOLERANCE_SECONDES
+        or exp <= iat
+        or exp - iat > DUREE_MAX_ASSERTION + TOLERANCE_SECONDES
+    )
+
+
 def _segment_json(segment: str, contexte: str) -> dict[str, Any]:
     try:
         decode = json.loads(b64url_decode(segment))
@@ -92,15 +102,21 @@ def valider_assertion(assertion: str) -> dict[str, Any]:
         raise ErreurToken("invalid_grant", "Invalid JWT Signature.")
     if claims.get("iss") != settings.sa_email:
         raise ErreurToken("invalid_grant", "Invalid grant: account not found")
-    maintenant = int(virtual_now().timestamp())
     iat, exp = claims.get("iat"), claims.get("exp")
+    # DEUX horloges de référence, l'assertion doit être valide contre l'UNE :
+    # un vrai client signe avec l'heure RÉELLE (août 2026 et au-delà), alors
+    # que le monde du mock est ANCRÉ (juillet 2026) — exiger la seule horloge
+    # virtuelle rejetterait tout client réel, exiger la seule horloge réelle
+    # casserait les assertions fabriquées contre l'ancre (build_assertion).
+    # Une assertion réellement périmée échoue contre LES DEUX. Affordance
+    # consignée dans docs/UNVERIFIED-FIELDS.md (fenetre-assertion-double-horloge).
     if (
         not isinstance(iat, int)
         or not isinstance(exp, int)
-        or iat > maintenant + TOLERANCE_SECONDES
-        or exp < maintenant - TOLERANCE_SECONDES
-        or exp <= iat
-        or exp - iat > DUREE_MAX_ASSERTION + TOLERANCE_SECONDES
+        or not any(
+            _fenetre_valide(iat, exp, reference)
+            for reference in (int(virtual_now().timestamp()), int(time.time()))
+        )
     ):
         raise ErreurToken("invalid_grant", _MESSAGE_FENETRE)
     scopes = str(claims.get("scope", "")).split()
