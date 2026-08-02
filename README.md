@@ -1,7 +1,195 @@
 # ga-mock
 
-Google Analytics 4 Data API (v1beta) mock serving deterministic, session-level
-analytics for the corporate website of Boréal Conseil — the same fictional
-world as [boondmanager-mock](https://github.com/LittleBigCode/boondmanager-mock).
+[![CI](https://github.com/LittleBigCode/ga-mock/actions/workflows/ci.yml/badge.svg)](https://github.com/LittleBigCode/ga-mock/actions/workflows/ci.yml)
 
-Work in progress — the full documentation lands with the packaging milestone.
+A Google Analytics 4 **Data API v1beta** mock, sibling of
+[boondmanager-mock](https://github.com/LittleBigCode/boondmanager-mock): the
+same fictional world (Boréal Conseil, a French IT consultancy of 34 people),
+seen through its corporate-website analytics. Consumers point `GA_API_URL` and
+`GA_TOKEN_URL` at this server in dev and at the real Google endpoints
+(`analyticsdata.googleapis.com`, `oauth2.googleapis.com`) in prod — the client
+code path is identical.
+
+Session-level by design: the dataset is ~32,000 individual sessions
+(2025-01-01 → 2026-07-15), so `totalUsers` is an **exact** distinct count over
+any date range — not an additive approximation that would lie precisely where
+GA4 is tricky.
+
+## Start in one command
+
+```bash
+docker run -p 8012:8000 -e GA_MOCK_ADMIN_ENABLED=true ghcr.io/littlebigcode/ga-mock:latest
+```
+
+or from a checkout: `docker compose up --build` (same, via `make up`), or
+without Docker: `make bootstrap && make run`.
+
+## Credentials and a full token flow, ready to paste
+
+Auth is **really validated**: RS256 signature, issuer, time window and scope
+are checked against the committed, overtly-fake service-account keypair. A
+badly signed assertion fails HERE, not in prod.
+
+The standard service-account JSON (with the fake PEM, `token_uri` rewritten to
+this server) is served out-of-contract:
+
+```bash
+curl -s http://localhost:8012/__fixtures/service-account.json
+```
+
+Exchange a signed assertion for a bearer (this literal assertion is valid
+against the default configuration — the virtual clock is anchored, so it does
+not expire until you advance the clock):
+
+```bash
+ASSERTION='eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiaW5zaWdodHMzNjBAYm9yZWFsLWNvbnNlaWwtbW9jay5pYW0uZ3NlcnZpY2VhY2NvdW50LmV4YW1wbGUiLCAic2NvcGUiOiAiaHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9hbmFseXRpY3MucmVhZG9ubHkiLCAiYXVkIjogImh0dHA6Ly9sb2NhbGhvc3Q6ODAxMi90b2tlbiIsICJpYXQiOiAxNzg0MTE4NjAwLCAiZXhwIjogMTc4NDEyMjIwMH0.F4K86AxY1-xvUHZFsk1hYBj2hxrZmtDSlC9BeX8y2Jb3hiUuV5ry9twxca36ZkDdsqB6yCKjLvRLKnyuQ-c8ePlpbUlMuXurQSsP4amhYaPYEtyBrJ6DrmlAdBaLELNDgsidMx5pC2e8fgfK04-JUQa_ne__dhWSMWBi-wUAc76drX06Mugtem7UD8zZGrp5RaY8l_m2sVfbgmFxy6kRDj7i3UJwyJQBew17dK8mGjriLsZLeRcAA7nIlksYDkKz1K4-x0szo1viUAxXstbt6jyy-77EHkUuWDgb-9TIO7hIsn1ZJbGarDohtpYfYg6MqJroy-t2Jt5VjLvg30FZHQ'
+TOKEN=$(curl -s -X POST http://localhost:8012/token \
+  -d "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
+  -d "assertion=$ASSERTION" | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
+```
+
+Regenerate an assertion at will (also the way consumer test suites mint
+tokens, with zero crypto dependency):
+
+```bash
+uv run python -c "from ga_mock import build_assertion; print(build_assertion())"
+```
+
+Run a report:
+
+```bash
+curl -s -X POST "http://localhost:8012/v1beta/properties/424242001:runReport" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"dateRanges":[{"startDate":"7daysAgo","endDate":"today"}],
+       "dimensions":[{"name":"date"}],
+       "metrics":[{"name":"sessions"},{"name":"totalUsers"}]}'
+```
+
+Control plane (when `GA_MOCK_ADMIN_ENABLED=true`):
+
+```bash
+curl -s -H "X-Mock-Admin-Token: mock-admin-token" http://localhost:8012/__admin/state
+```
+
+Gotchas that are faithful on purpose: a missing bearer → `401 UNAUTHENTICATED`
+(google.rpc envelope + `WWW-Authenticate`), a bad signature on `/token` →
+`400 invalid_grant` (RFC 6749 envelope), another property id → `403
+PERMISSION_DENIED`.
+
+## Two modes, both maintained
+
+- **in-process** — `TestClient(ga_mock.app)` inside a test suite;
+- **container** — the published image for compose stacks and CI sidecars.
+
+The application the stack queries IS the one the tests exercise.
+
+## Served surface
+
+| Path | Purpose |
+|---|---|
+| `POST /token` | oauth2.googleapis.com service-account JWT-bearer exchange |
+| `POST /v1beta/properties/{id}:runReport` | the workhorse report endpoint |
+| `POST /v1beta/properties/{id}:batchRunReports` | up to 5 reports per call |
+| `GET /v1beta/properties/{id}/metadata` | dimensions/metrics — generated FROM the registry (`properties/0` accepted) |
+| `GET /health` | unauthenticated probe |
+| `GET /__fixtures/service-account.json` | fake SA JSON, `token_uri` rewritten to this server (out of contract) |
+| `POST /__admin/*` | reset / state / inject / clock (mounted only when enabled) |
+
+20 dimensions, 15 metrics — the exact list is what `GET …/metadata` returns,
+and the OpenAPI contract lives in `contracts/ga4-data.openapi.yaml`
+(regenerated by `make contract`, equality enforced by a test).
+
+## The reproduced dialect
+
+| Aspect | Behavior |
+|---|---|
+| int64 fields (`limit`, `offset`) | accepted as JSON number OR string (proto3 JSON) |
+| metric/dimension values | always serialized as **strings** |
+| empty repeated fields | key **absent** — never `"rows": []`, and no `"rowCount"` when zero |
+| `date` values | `YYYYMMDD`; relative dates `today`/`yesterday`/`NdaysAgo` resolve against the **virtual clock** |
+| 2–4 `dateRanges` | implicit `dateRange` dimension appended to headers |
+| `limit` | default 10000, values over 250000 silently capped |
+| filters | full `FilterExpression` trees; filter fields must be requested in the report |
+| `metricAggregations` | `TOTAL` (exact global dedup) / `MAXIMUM` / `MINIMUM` with `RESERVED_*` markers |
+| `returnPropertyQuota` | the five standard buckets, decremented per report |
+| errors | `{"error": {code, message, status}}` with matching HTTP code; `/token` speaks RFC 6749 instead |
+
+Everything not attested against the public reference is quarantined in
+[docs/UNVERIFIED-FIELDS.md](docs/UNVERIFIED-FIELDS.md) — a test fails if an
+approximation is not registered there.
+
+## The dataset
+
+Deterministic, seeded (`GA_MOCK_SEED`, default 42): same seed, same world,
+byte-for-byte. Each day is a pure function of `(seed, day)` — history can
+never be rewritten. The world tells the life of Boréal Conseil: ~40–120
+sessions/day with weekday/holiday/summer seasonality, a ~32-page site
+(`/expertises/*` mirroring the four business units, `/realisations/*`,
+`/blog/*`, `/offres-emploi/*` matching the CRM world's job postings), seven
+named campaigns (`recrutement-cyber-2026`, `livre-blanc-data-mesh`, …) that
+convert more, monthly `newsletter-YYYY-MM` email campaigns, and stable
+returning-visitor ids so user dedup is real. Key events: `generate_lead`
+(contact form) and `job_apply` (postings).
+
+## Freshness and the virtual clock
+
+GA4 keeps back-filling recent days for ~48 h; so does the mock
+(`GA_MOCK_FRESHNESS_HOURS`). Recent days serve a growing, monotonic subset of
+their sessions; days out of the window are complete and immutable. The clock
+is **anchored** at 2026-07-15T14:30+02:00 (same world date as
+boondmanager-mock) and only moves via:
+
+```bash
+curl -s -X POST -H "X-Mock-Admin-Token: mock-admin-token" \
+  -d '{"advance_seconds": 86400}' http://localhost:8012/__admin/clock
+```
+
+Advancing the clock ages relative dates, freshness AND bearer expiry together
+(a client must renew its token after a big jump — deliberately). This is the
+lever that lets a consumer prove its "re-extract the last N days" incremental
+pattern; see [docs/features/freshness.md](docs/features/freshness.md).
+
+## Failure modes
+
+`POST /__admin/inject` with `kind`:
+
+| kind | Reproduces |
+|---|---|
+| `rate_limit` | 429 RESOURCE_EXHAUSTED after N requests, with `Retry-After` |
+| `quota_exhausted` | 429 daily-quota exhaustion |
+| `status` | any 5xx (transient with `times`, persistent without) |
+| `latency` | slow upstream (`seconds`) |
+| `auth_reject` | 401 that preempts a VALID bearer |
+
+Scopes are globs (`*:runReport`, `/v1beta/*`, `/token`, `*`);
+`GA_MOCK_RATE_LIMIT_AFTER` sets a baseline rule that survives resets.
+
+## Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GA_MOCK_HOST` / `GA_MOCK_PORT` | `0.0.0.0` / `8000` | bind address/port |
+| `GA_MOCK_SEED` | `42` | dataset seed |
+| `GA_MOCK_PROPERTY_ID` | `424242001` | the only property served (others → 403) |
+| `GA_MOCK_SA_EMAIL` | `insights360@boreal-conseil-mock.iam.gserviceaccount.example` | expected JWT `iss` |
+| `GA_MOCK_FRESHNESS_HOURS` | `48` | processing-latency window |
+| `GA_MOCK_ADMIN_ENABLED` | `false` | mounts `/__admin` (absent otherwise) |
+| `GA_MOCK_ADMIN_TOKEN` | `mock-admin-token` | `X-Mock-Admin-Token` value |
+| `GA_MOCK_QUOTA_TOKENS_PER_DAY` / `_PER_HOUR` | `200000` / `40000` | property quota buckets |
+| `GA_MOCK_RATE_LIMIT_AFTER` / `GA_MOCK_RETRY_AFTER` | — / `1` | baseline rate-limit injection |
+
+## Development
+
+```bash
+make bootstrap   # uv sync
+make test        # pytest
+make lint        # ruff check + format --check + mypy strict
+make format      # ruff format + autofix
+make run         # local server with the control plane enabled
+make image       # docker build
+make contract    # regenerate contracts/ga4-data.openapi.yaml — REVIEW the diff
+```
+
+The fake RSA keypair is committed on purpose (it authenticates a mock, i.e.
+nothing); `scripts/generate_keypair.py` regenerates it — knowing that this
+invalidates the copies consumers keep (e.g. `insights360/.env.example`).

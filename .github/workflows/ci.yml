@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy src/ga_mock
+      - run: uv run pytest tests/
+
+  image:
+    needs: tests
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=sha
+      - name: Build locale pour le smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ga-mock:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test — l'image doit démarrer et parler le dialecte
+        run: |
+          docker run -d --rm --name smoke -p 8000:8000 ga-mock:smoke
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8000/health > /dev/null && break
+            sleep 1
+          done
+          curl -sf http://localhost:8000/health
+          # Sans bearer, la surface Data répond le 401 UNAUTHENTICATED de
+          # Google — jamais un {"detail"} FastAPI.
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8000/v1beta/properties/424242001:runReport)" = "401"
+          curl -s -X POST http://localhost:8000/v1beta/properties/424242001:runReport | grep -q '"status":"UNAUTHENTICATED"'
+          docker stop smoke
+      - name: Push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha

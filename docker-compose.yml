@@ -1,0 +1,15 @@
+# Démarrage local du mock seul — `docker compose up --build` ou `make up`.
+# Le port hôte 8012 suit la table de l'écosystème insights360 (8010 boond,
+# 8011 entra, 8012 ga). Un consommateur peut préférer l'image publiée :
+#   image: ghcr.io/littlebigcode/ga-mock:latest
+# Le healthcheck est DANS l'image : `depends_on: condition: service_healthy`
+# fonctionne côté consommateur sans rien ajouter ici.
+services:
+  ga-mock:
+    build: .
+    image: ga-mock:0.1.0
+    ports:
+      - "8012:8000"
+    environment:
+      GA_MOCK_ADMIN_ENABLED: "true"
+      GA_MOCK_SEED: "42"

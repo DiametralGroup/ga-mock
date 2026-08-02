@@ -1,0 +1,17 @@
+# Tout ce que le Dockerfile ne COPY pas.
+.git
+.github
+.venv
+.pytest_cache
+.mypy_cache
+.ruff_cache
+__pycache__
+tests
+docs
+contracts
+scripts
+Makefile
+docker-compose.yml
+Dockerfile
+.gitignore
+.dockerignore
