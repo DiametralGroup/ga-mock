@@ -632,6 +632,11 @@ def build_day(seed: int, d: date) -> tuple[Session, ...]:
     réordonner sans raison : tout changement d'ordre de consommation du rng
     change le monde, donc le contrat de fait des tests consommateurs.
     """
+    # Avant l'historique, le site n'existe pas : monde VIDE, pas extrapolé.
+    # (Les jours futurs, eux, n'ont pas besoin de garde : leurs sessions sont
+    # invisibles par construction, leur horodatage dépasse l'horloge.)
+    if d < DEBUT_HISTORIQUE:
+        return ()
     rng = random.Random(f"{seed}:{d.isoformat()}")
     organique = round(_volume_organique(d) * (0.85 + 0.30 * rng.random()))
     volumes_campagnes: list[tuple[Campagne, int]] = []

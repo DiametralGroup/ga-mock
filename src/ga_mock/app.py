@@ -27,9 +27,9 @@ from .auth import (
     fixture_service_account,
     valider_assertion,
 )
-from .errors import MESSAGE_401, MESSAGE_403_PROPRIETE, erreur
+from .errors import MESSAGE_401, MESSAGE_403_PROPRIETE, ErreurQuota, erreur
 from .registry import metadata_payload
-from .report import executer_run_report
+from .report import ErreurRequete, executer_run_report
 from .settings import settings
 
 app = FastAPI(title="Google Analytics 4 mock", version="0.1.0", docs_url="/docs")
@@ -122,7 +122,46 @@ async def run_report(request: Request, property_id: str) -> JSONResponse:
     corps = await _corps_json(request)
     if isinstance(corps, JSONResponse):
         return corps
-    return executer_run_report(corps)
+    try:
+        return JSONResponse(executer_run_report(corps))
+    except ErreurRequete as exc:
+        return erreur(400, str(exc))
+    except ErreurQuota as exc:
+        return erreur(429, str(exc))
+
+
+def _executer_batch(corps: dict[str, object]) -> JSONResponse:
+    demandes = corps.get("requests")
+    if not isinstance(demandes, list) or not demandes:
+        return erreur(400, "batchRunReports must specify at least one request.")
+    if len(demandes) > 5:
+        return erreur(400, "batchRunReports is limited to 5 requests.")
+    rapports = []
+    try:
+        for demande in demandes:
+            if not isinstance(demande, dict):
+                return erreur(400, "Invalid value for requests.")
+            rapports.append(executer_run_report(demande))
+    except ErreurRequete as exc:
+        return erreur(400, str(exc))
+    except ErreurQuota as exc:
+        return erreur(429, str(exc))
+    return JSONResponse({"reports": rapports, "kind": "analyticsData#batchRunReports"})
+
+
+@app.post("/v1beta/properties/{property_id}:batchRunReports")
+async def batch_run_reports(request: Request, property_id: str) -> JSONResponse:
+    """≤ 5 sous-rapports ; l'auth, la propriété et le JSON se contrôlent UNE
+    fois au niveau du lot, puis chaque sous-rapport traverse le pipeline
+    complet — une sous-requête invalide fait échouer tout le lot."""
+    if (refus := _verifier_bearer(request)) is not None:
+        return refus
+    if (refus := _verifier_propriete(property_id)) is not None:
+        return refus
+    corps = await _corps_json(request)
+    if isinstance(corps, JSONResponse):
+        return corps
+    return _executer_batch(corps)
 
 
 @app.get("/v1beta/properties/{property_id}/metadata")

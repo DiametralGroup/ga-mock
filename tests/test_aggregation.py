@@ -179,3 +179,186 @@ def test_sans_metrique_refuse(client, bearer):
     )
     assert reponse.status_code == 400
     assert "at least one metric" in reponse.json()["error"]["message"]
+
+
+def test_filtre_exact_sur_canal(client, bearer):
+    debut, fin = date(2026, 6, 1), date(2026, 6, 5)
+    rapport = _rapport(
+        client,
+        bearer,
+        {
+            "dateRanges": [{"startDate": str(debut), "endDate": str(fin)}],
+            "dimensions": [{"name": "sessionDefaultChannelGroup"}],
+            "metrics": [{"name": "sessions"}],
+            "dimensionFilter": {
+                "filter": {
+                    "fieldName": "sessionDefaultChannelGroup",
+                    "stringFilter": {"matchType": "EXACT", "value": "direct"},
+                }
+            },
+        },
+    )
+    # caseSensitive vaut false par défaut : « direct » matche « Direct »
+    assert len(rapport["rows"]) == 1
+    assert rapport["rows"][0]["dimensionValues"][0]["value"] == "Direct"
+    attendu = sum(
+        1 for d in _jours(debut, fin) for s in build_day(SEED, d) if s.channel_group == "Direct"
+    )
+    assert int(rapport["rows"][0]["metricValues"][0]["value"]) == attendu
+
+
+def test_full_regexp_contre_partial_regexp(client, bearer):
+    plage = [{"startDate": "2026-06-01", "endDate": "2026-06-03"}]
+
+    def compte(match_type):
+        rapport = _rapport(
+            client,
+            bearer,
+            {
+                "dateRanges": plage,
+                "dimensions": [{"name": "pagePath"}],
+                "metrics": [{"name": "screenPageViews"}],
+                "dimensionFilter": {
+                    "filter": {
+                        "fieldName": "pagePath",
+                        "stringFilter": {"matchType": match_type, "value": "/blog"},
+                    }
+                },
+            },
+        )
+        return rapport.get("rows", [])
+
+    # FULL_REGEXP : « /blog » ne matche que la page d'index, pas les articles
+    complets = compte("FULL_REGEXP")
+    assert {ligne["dimensionValues"][0]["value"] for ligne in complets} == {"/blog"}
+    # PARTIAL_REGEXP : toutes les pages contenant /blog
+    partiels = compte("PARTIAL_REGEXP")
+    assert len(partiels) > 1
+    assert all("/blog" in ligne["dimensionValues"][0]["value"] for ligne in partiels)
+
+
+def test_inlist_et_notexpression_combines(client, bearer):
+    debut, fin = date(2026, 6, 1), date(2026, 6, 5)
+    rapport = _rapport(
+        client,
+        bearer,
+        {
+            "dateRanges": [{"startDate": str(debut), "endDate": str(fin)}],
+            "dimensions": [{"name": "deviceCategory"}, {"name": "country"}],
+            "metrics": [{"name": "sessions"}],
+            "dimensionFilter": {
+                "andGroup": {
+                    "expressions": [
+                        {
+                            "filter": {
+                                "fieldName": "deviceCategory",
+                                "inListFilter": {"values": ["desktop", "tablet"]},
+                            }
+                        },
+                        {
+                            "notExpression": {
+                                "filter": {
+                                    "fieldName": "country",
+                                    "stringFilter": {
+                                        "matchType": "EXACT",
+                                        "value": "France",
+                                    },
+                                }
+                            }
+                        },
+                    ]
+                }
+            },
+        },
+    )
+    attendu = sum(
+        1
+        for d in _jours(debut, fin)
+        for s in build_day(SEED, d)
+        if s.device_category in ("desktop", "tablet") and s.country != "France"
+    )
+    obtenu = sum(int(ligne["metricValues"][0]["value"]) for ligne in rapport["rows"])
+    assert obtenu == attendu
+    assert all(ligne["dimensionValues"][1]["value"] != "France" for ligne in rapport["rows"])
+
+
+def test_metricfilter_est_un_having(client, bearer):
+    plage = [{"startDate": "2026-05-01", "endDate": "2026-05-30"}]
+    sans_filtre = _rapport(
+        client,
+        bearer,
+        {
+            "dateRanges": plage,
+            "dimensions": [{"name": "date"}],
+            "metrics": [{"name": "sessions"}],
+        },
+    )
+    valeurs = sorted(
+        (int(ligne["metricValues"][0]["value"]) for ligne in sans_filtre["rows"]),
+        reverse=True,
+    )
+    seuil = valeurs[len(valeurs) // 2]  # la médiane : coupe une partie des lignes
+    filtre = _rapport(
+        client,
+        bearer,
+        {
+            "dateRanges": plage,
+            "dimensions": [{"name": "date"}],
+            "metrics": [{"name": "sessions"}],
+            "metricFilter": {
+                "filter": {
+                    "fieldName": "sessions",
+                    "numericFilter": {
+                        "operation": "GREATER_THAN",
+                        "value": {"int64Value": str(seuil)},
+                    },
+                }
+            },
+        },
+    )
+    assert filtre["rowCount"] == sum(1 for v in valeurs if v > seuil)
+    assert all(int(ligne["metricValues"][0]["value"]) > seuil for ligne in filtre["rows"])
+
+
+def test_betweenfilter_inclusif(client, bearer):
+    plage = [{"startDate": "2026-05-01", "endDate": "2026-05-30"}]
+    rapport = _rapport(
+        client,
+        bearer,
+        {
+            "dateRanges": plage,
+            "dimensions": [{"name": "date"}],
+            "metrics": [{"name": "sessions"}],
+            "metricFilter": {
+                "filter": {
+                    "fieldName": "sessions",
+                    "betweenFilter": {
+                        "fromValue": {"int64Value": "20"},
+                        "toValue": {"doubleValue": 100},
+                    },
+                }
+            },
+        },
+    )
+    for ligne in rapport["rows"]:
+        assert 20 <= int(ligne["metricValues"][0]["value"]) <= 100
+
+
+def test_filtre_sur_champ_non_demande_refuse(client, bearer):
+    reponse = client.post(
+        PROPRIETE,
+        headers=bearer,
+        json={
+            "dateRanges": [{"startDate": "2026-06-01", "endDate": "2026-06-02"}],
+            "dimensions": [{"name": "date"}],
+            "metrics": [{"name": "sessions"}],
+            "dimensionFilter": {
+                "filter": {
+                    "fieldName": "country",
+                    "stringFilter": {"matchType": "EXACT", "value": "France"},
+                }
+            },
+        },
+    )
+    assert reponse.status_code == 400
+    assert "must be a requested dimension" in reponse.json()["error"]["message"]

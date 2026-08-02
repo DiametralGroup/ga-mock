@@ -45,6 +45,20 @@ MESSAGE_403_PROPRIETE = (
     "https://developers.google.com/analytics/devguides/reporting/data/v1/property-id."
 )
 
+MESSAGE_429_JOUR = (
+    "Exhausted property tokens for a project per day. "
+    "These quota tokens will return in less than 24 hours."
+)
+
+MESSAGE_429_HEURE = (
+    "Exhausted property tokens for a project per hour. "
+    "These quota tokens will return in under an hour."
+)
+
+
+class ErreurQuota(Exception):
+    """Épuisement de quota → 429 RESOURCE_EXHAUSTED, wording façon Google."""
+
 
 def erreur(
     code: int,

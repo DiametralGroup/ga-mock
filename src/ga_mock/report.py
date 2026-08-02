@@ -17,10 +17,8 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
-from fastapi.responses import JSONResponse
-
 from .clock import resoudre_date
-from .errors import erreur
+from .filters import ErreurFiltre, Predicat, compiler
 from .registry import (
     DIMENSIONS,
     METRIQUES,
@@ -30,7 +28,7 @@ from .registry import (
     Metrique,
     Unite,
 )
-from .settings import CURRENCY_CODE, TIME_ZONE
+from .settings import CURRENCY_CODE, TIME_ZONE, settings
 from .state import state
 
 LIMITE_DEFAUT = 10_000
@@ -44,6 +42,10 @@ AGREGATIONS_SUPPORTEES = ("TOTAL", "MAXIMUM", "MINIMUM")
 CHAMPS_NON_SUPPORTES = ("cohortSpec", "comparisons")
 
 DIMENSION_PLAGE = "dateRange"
+
+# Coût forfaitaire d'un rapport en jetons de quota — le vrai coût varie avec
+# la complexité de la requête ; l'approximation est consignée (UNVERIFIED).
+COUT_JETONS_RAPPORT = 10
 
 
 class ErreurRequete(Exception):
@@ -67,8 +69,8 @@ class Requete:
     limite: int
     decalage: int
     tris: list[dict[str, Any]] = field(default_factory=list)
-    filtre_dimensions: dict[str, Any] | None = None
-    filtre_metriques: dict[str, Any] | None = None
+    pred_dimensions: Predicat | None = None
+    pred_metriques: Predicat | None = None
     agregations: list[str] = field(default_factory=list)
     lignes_vides: bool = False
     quota: bool = False
@@ -184,6 +186,17 @@ def _tris(corps: dict[str, Any], dims: list[str], mets: list[str]) -> list[dict[
     return [dict(tri) for tri in brut]
 
 
+def _compiler_filtre(brut: Any, noms: list[str], sorte: str) -> Predicat | None:
+    if brut is None:
+        return None
+    if not isinstance(brut, dict):
+        raise ErreurRequete(f"Invalid value for {sorte}Filter.")
+    try:
+        return compiler(brut, noms, sorte)
+    except ErreurFiltre as exc:
+        raise ErreurRequete(str(exc)) from exc
+
+
 def valider(corps: dict[str, Any]) -> Requete:
     for champ in CHAMPS_NON_SUPPORTES:
         if champ in corps:
@@ -212,8 +225,10 @@ def valider(corps: dict[str, Any]) -> Requete:
         limite=min(limite, LIMITE_MAX),
         decalage=decalage,
         tris=_tris(corps, noms_dimensions, noms_metriques),
-        filtre_dimensions=corps.get("dimensionFilter"),
-        filtre_metriques=corps.get("metricFilter"),
+        pred_dimensions=_compiler_filtre(
+            corps.get("dimensionFilter"), noms_dimensions, "dimension"
+        ),
+        pred_metriques=_compiler_filtre(corps.get("metricFilter"), noms_metriques, "metric"),
         agregations=_agregations(corps),
         lignes_vides=bool(corps.get("keepEmptyRows", False)),
         quota=bool(corps.get("returnPropertyQuota", False)),
@@ -252,14 +267,18 @@ def collecter(
     groupes: dict[tuple[str, ...], Accumulateur] = {}
     globaux: dict[str, Accumulateur] = {}
     fan_page, fan_event = requete.fan_page, requete.fan_event
+    extracteurs = [(d.api_name, d.extraire) for d in requete.dimensions]
     for plage in requete.plages:
         global_plage = globaux.setdefault(plage.nom, Accumulateur())
         for jour in _jours(plage):
             for unite in _unites(requete, jour):
-                cle = (
-                    *(dim.extraire(unite) for dim in requete.dimensions),
-                    plage.nom,
-                )
+                valeurs = {nom: extraire(unite) for nom, extraire in extracteurs}
+                # dimensionFilter s'applique AVANT toute agrégation : le global
+                # de plage (donc les totals) reflète le filtre, comme le vrai
+                # service.
+                if requete.pred_dimensions and not requete.pred_dimensions(valeurs):
+                    continue
+                cle = (*(valeurs[nom] for nom, _ in extracteurs), plage.nom)
                 acc = groupes.get(cle)
                 if acc is None:
                     acc = groupes[cle] = Accumulateur()
@@ -437,17 +456,60 @@ def serialiser(
     return corps
 
 
+# ── Quota ────────────────────────────────────────────────────────────────────
+
+
+def _bucket(consomme: int, restant: int) -> dict[str, int]:
+    """Un QuotaStatus proto3 : les zéros sont OMIS, comme tout scalaire à sa
+    valeur par défaut."""
+    bloc: dict[str, int] = {}
+    if consomme:
+        bloc["consumed"] = consomme
+    if restant:
+        bloc["remaining"] = restant
+    return bloc
+
+
+def _bloc_quota() -> dict[str, Any]:
+    return {
+        "tokensPerDay": _bucket(
+            COUT_JETONS_RAPPORT,
+            max(0, settings.quota_tokens_per_day - state.quota_jour_consomme),
+        ),
+        "tokensPerHour": _bucket(
+            COUT_JETONS_RAPPORT,
+            max(0, settings.quota_tokens_per_hour - state.quota_heure_consomme),
+        ),
+        "concurrentRequests": _bucket(0, 10),
+        "serverErrorsPerProjectPerHour": _bucket(0, 10),
+        "potentiallyThresholdedRequestsPerHour": _bucket(0, 120),
+    }
+
+
 # ── Le pipeline assemblé ─────────────────────────────────────────────────────
 
 
-def executer_run_report(corps: dict[str, Any]) -> JSONResponse:
-    try:
-        requete = valider(corps)
-    except ErreurRequete as exc:
-        return erreur(400, str(exc))
+def executer_run_report(corps: dict[str, Any]) -> dict[str, Any]:
+    """Peut lever ErreurRequete (→ 400) ou ErreurQuota (→ 429) — la conversion
+    en enveloppe HTTP appartient à app.py, ce qui permet à batchRunReports de
+    réutiliser le pipeline sous-rapport par sous-rapport."""
+    requete = valider(corps)
+    # Le quota se consomme APRÈS validation : une requête invalide ne coûte
+    # rien, comme chez Google.
+    state.consommer_quota(COUT_JETONS_RAPPORT)
     groupes, globaux = collecter(requete)
     if requete.lignes_vides:
         _spine(requete, groupes)
     lignes = calculer_lignes(requete, groupes)
+    if requete.pred_metriques:
+        noms_mets = [m.api_name for m in requete.metriques]
+        lignes = [
+            ligne
+            for ligne in lignes
+            if requete.pred_metriques(dict(zip(noms_mets, ligne.valeurs, strict=True)))
+        ]
     ordonner(requete, lignes)
-    return JSONResponse(serialiser(requete, lignes, globaux))
+    reponse = serialiser(requete, lignes, globaux)
+    if requete.quota:
+        reponse["propertyQuota"] = _bloc_quota()
+    return reponse

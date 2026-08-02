@@ -69,3 +69,11 @@ def test_ids_de_nouveaux_visiteurs_uniques_sur_30_jours():
             if s.is_new:
                 assert s.user_id not in vus
                 vus.add(s.user_id)
+
+
+def test_monde_vide_avant_l_historique():
+    from datetime import date as d
+
+    assert build_day(SEED, d(2024, 12, 31)) == ()
+    assert build_day(SEED, d(2020, 6, 1)) == ()
+    assert len(build_day(SEED, d(2025, 1, 2))) > 0

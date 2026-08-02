@@ -12,6 +12,7 @@ from datetime import date, timedelta
 
 from .clock import horloge, virtual_now
 from .dataset.sessions import Session, build_day
+from .errors import MESSAGE_429_HEURE, MESSAGE_429_JOUR, ErreurQuota
 from .settings import settings
 
 
@@ -19,6 +20,19 @@ class MockState:
     def __init__(self) -> None:
         self.seed: int = settings.seed
         self._jours: dict[date, tuple[Session, ...]] = {}
+        self.quota_jour_consomme: int = 0
+        self.quota_heure_consomme: int = 0
+
+    def consommer_quota(self, jetons: int) -> None:
+        """Décompte des jetons de propriété — l'épuisement NATUREL produit la
+        même 429 que le vrai service. Rare avec les plafonds par défaut ;
+        l'injection `quota_exhausted` force le cas sans attendre."""
+        if self.quota_jour_consomme + jetons > settings.quota_tokens_per_day:
+            raise ErreurQuota(MESSAGE_429_JOUR)
+        if self.quota_heure_consomme + jetons > settings.quota_tokens_per_hour:
+            raise ErreurQuota(MESSAGE_429_HEURE)
+        self.quota_jour_consomme += jetons
+        self.quota_heure_consomme += jetons
 
     def day(self, d: date) -> tuple[Session, ...]:
         """Matérialisation paresseuse + cache.
@@ -57,6 +71,8 @@ class MockState:
         settings.reload()
         self.seed = settings.seed if seed is None else seed
         self._jours.clear()
+        self.quota_jour_consomme = 0
+        self.quota_heure_consomme = 0
         horloge.offset_secondes = 0.0
 
 
