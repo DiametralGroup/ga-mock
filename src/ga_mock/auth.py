@@ -2,15 +2,25 @@
 
 Deux moitiés :
   • `/token` — le flux JWT-bearer de oauth2.googleapis.com : l'assertion RS256
-    est VÉRIFIÉE (structure, signature, iss, fenêtre temporelle, scope) contre
-    la bi-clé factice committée. Un mock qui accepte n'importe quoi ne teste
-    rien : un client qui signe mal doit échouer ICI, pas en prod.
+    est VÉRIFIÉE (structure, signature, iss, fenêtre temporelle, scope, aud)
+    contre la bi-clé factice committée. Un mock qui accepte n'importe quoi ne
+    teste rien : un client qui signe mal doit échouer ICI, pas en prod.
   • les bearers — jetons opaques SANS ÉTAT (HMAC sur l'échéance + nonce),
     expirés selon l'horloge VIRTUELLE : /__admin/clock fait donc vieillir les
     jetons aussi, ce qui permet de tester le renouvellement côté client.
 
-L'ordre des contrôles et les messages du vrai endpoint ne sont qu'en partie
-attestés ; chaque wording incertain est consigné dans docs/UNVERIFIED-FIELDS.md.
+L'ORDRE des contrôles et les wordings sont désormais ATTESTÉS : ils ont été
+relevés sur oauth2.googleapis.com le 2026-09-02 avec un vrai compte de service
+(cf. docs/CONFORMITE-REELLE.md, section /token). Deux surprises reproduites
+ici parce qu'un consommateur les rencontrera en prod :
+
+  • une assertion structurellement indécodable ne sort PAS en `invalid_grant`
+    avec un message explicatif, mais en `invalid_request` / « Bad Request »
+    tout court — le vendeur ne dit pas ce qui cloche ;
+  • un `scope` bien formé mais non reconnu ne provoque PAS d'erreur : le
+    endpoint répond 200 avec un `id_token` et AUCUN `access_token`. Le client
+    qui fait `reponse["access_token"]` casse sur un KeyError, en prod comme
+    ici.
 """
 
 from __future__ import annotations
@@ -35,7 +45,20 @@ SCOPES_ACCEPTES = (
 )
 TOLERANCE_SECONDES = 60
 DUREE_MAX_ASSERTION = 3600
+# Identifiant numérique du compte de service : `client_id` dans le JSON servi,
+# `sub` dans l'id_token — les deux DOIVENT concorder, comme chez le vendeur.
+CLIENT_ID = "104727004242420010001"
 
+# Wordings relevés SUR le vendeur (2026-09-02). Ne pas « améliorer » : un
+# consommateur peut brancher dessus, et c'est exactement ce que le mock existe
+# pour lui permettre d'exercer.
+_MESSAGE_BAD_REQUEST = "Bad Request"
+_MESSAGE_SIGNATURE = "Invalid JWT Signature."
+_MESSAGE_COMPTE = "Invalid grant: account not found"
+_MESSAGE_IAT_ABSENT = "Invalid JWT: iat (issued at) is not set."
+_MESSAGE_EXP_ABSENT = "Invalid JWT: exp (expiration time) is not set."
+_MESSAGE_AUD = "Invalid JWT: Failed audience check."
+_MESSAGE_SCOPE = "Invalid OAuth scope or ID token audience provided."
 _MESSAGE_FENETRE = (
     "Invalid JWT: Token must be a short-lived token (60 minutes) and in a "
     "reasonable timeframe. Check your iat and exp values in the JWT claim."
@@ -71,64 +94,129 @@ def _fenetre_valide(iat: int, exp: int, reference: int) -> bool:
     )
 
 
-def _segment_json(segment: str, contexte: str) -> dict[str, Any]:
+def _segment_json(segment: str) -> dict[str, Any]:
+    """Un segment illisible sort en `invalid_request` / « Bad Request ».
+
+    Attesté : le vendeur ne dit PAS ce qui cloche dans une assertion
+    indécodable — ni le segment fautif, ni la raison. Rendre un message
+    explicatif ici entraînerait le consommateur à un diagnostic qu'il n'aura
+    jamais en prod.
+    """
     try:
         decode = json.loads(b64url_decode(segment))
     except (ValueError, UnicodeDecodeError) as exc:
-        raise ErreurToken("invalid_grant", f"Invalid JWT: unable to parse {contexte}.") from exc
+        raise ErreurToken("invalid_request", _MESSAGE_BAD_REQUEST) from exc
     if not isinstance(decode, dict):
-        raise ErreurToken("invalid_grant", f"Invalid JWT: {contexte} is not an object.")
+        raise ErreurToken("invalid_request", _MESSAGE_BAD_REQUEST)
     return decode
 
 
+def _entier_jwt(valeur: Any) -> int | None:
+    """`iat`/`exp` acceptés en nombre OU en chaîne de chiffres — attesté : une
+    assertion portant `"iat": "1788361815"` obtient un jeton chez le vendeur."""
+    if isinstance(valeur, bool):
+        return None
+    if isinstance(valeur, int):
+        return valeur
+    if isinstance(valeur, str) and valeur.isdigit():
+        return int(valeur)
+    return None
+
+
 def valider_assertion(assertion: str) -> dict[str, Any]:
-    """Contrôles dans l'ordre du vrai endpoint (tel qu'observé) : structure,
-    signature, compte, fenêtre temporelle, scope. Retourne les claims."""
+    """Contrôles dans l'ORDRE du vrai endpoint, relevé le 2026-09-02 :
+    structure → signature → compte → présence de iat/exp → fenêtre → scope
+    non vide → audience. Retourne les claims."""
     morceaux = assertion.split(".")
     if len(morceaux) != 3 or not all(morceaux):
-        raise ErreurToken("invalid_grant", "Invalid JWT: assertion must have 3 segments.")
+        raise ErreurToken("invalid_request", _MESSAGE_BAD_REQUEST)
     entete_b64, charge_b64, signature_b64 = morceaux
-    entete = _segment_json(entete_b64, "token header")
-    if entete.get("alg") != "RS256":
-        raise ErreurToken(
-            "invalid_grant", "Invalid JWT: only RS256 is supported for service accounts."
-        )
-    claims = _segment_json(charge_b64, "claims")
+    entete = _segment_json(entete_b64)
+    claims = _segment_json(charge_b64)
     try:
         signature = b64url_decode(signature_b64)
     except ValueError as exc:
-        raise ErreurToken("invalid_grant", "Invalid JWT Signature.") from exc
-    if not verify(f"{entete_b64}.{charge_b64}".encode(), signature, keypair.N, keypair.E):
-        raise ErreurToken("invalid_grant", "Invalid JWT Signature.")
+        raise ErreurToken("invalid_request", _MESSAGE_BAD_REQUEST) from exc
+    # `alg` non-RS256 (y compris `none` ou absent) tombe sur le MÊME message
+    # que la signature fausse : le vendeur ne distingue pas les deux cas.
+    if entete.get("alg") != "RS256" or not verify(
+        f"{entete_b64}.{charge_b64}".encode(), signature, keypair.N, keypair.E
+    ):
+        raise ErreurToken("invalid_grant", _MESSAGE_SIGNATURE)
     if claims.get("iss") != settings.sa_email:
-        raise ErreurToken("invalid_grant", "Invalid grant: account not found")
-    iat, exp = claims.get("iat"), claims.get("exp")
+        raise ErreurToken("invalid_grant", _MESSAGE_COMPTE)
+    iat, exp = _entier_jwt(claims.get("iat")), _entier_jwt(claims.get("exp"))
+    if iat is None:
+        raise ErreurToken("invalid_grant", _MESSAGE_IAT_ABSENT)
+    if exp is None:
+        raise ErreurToken("invalid_grant", _MESSAGE_EXP_ABSENT)
     # DEUX horloges de référence, l'assertion doit être valide contre l'UNE :
-    # un vrai client signe avec l'heure RÉELLE (août 2026 et au-delà), alors
-    # que le monde du mock est ANCRÉ (juillet 2026) — exiger la seule horloge
-    # virtuelle rejetterait tout client réel, exiger la seule horloge réelle
-    # casserait les assertions fabriquées contre l'ancre (build_assertion).
-    # Une assertion réellement périmée échoue contre LES DEUX. Affordance
-    # consignée dans docs/UNVERIFIED-FIELDS.md (fenetre-assertion-double-horloge).
-    if (
-        not isinstance(iat, int)
-        or not isinstance(exp, int)
-        or not any(
-            _fenetre_valide(iat, exp, reference)
-            for reference in (int(virtual_now().timestamp()), int(time.time()))
-        )
+    # un vrai client signe avec l'heure RÉELLE (septembre 2026 et au-delà),
+    # alors que le monde du mock est ANCRÉ (juillet 2026) — exiger la seule
+    # horloge virtuelle rejetterait tout client réel, exiger la seule horloge
+    # réelle casserait les assertions fabriquées contre l'ancre
+    # (build_assertion). Une assertion réellement périmée échoue contre LES
+    # DEUX. Affordance consignée (fenetre-assertion-double-horloge).
+    if not any(
+        _fenetre_valide(iat, exp, reference)
+        for reference in (int(virtual_now().timestamp()), int(time.time()))
     ):
         raise ErreurToken("invalid_grant", _MESSAGE_FENETRE)
-    scopes = str(claims.get("scope", "")).split()
-    if not any(s in SCOPES_ACCEPTES for s in scopes):
-        raise ErreurToken("invalid_scope", "Invalid OAuth scope or ID token audience provided.")
+    # Un scope VIDE est une erreur ; un scope non reconnu ne l'est pas — il
+    # bascule la réponse en id_token (cf. reponse_token). Attesté : audience
+    # fausse + scope vide sort en `invalid_scope`, donc ce contrôle-ci PRÉCÈDE
+    # celui de `aud`.
+    if not str(claims.get("scope", "")).split():
+        raise ErreurToken("invalid_scope", _MESSAGE_SCOPE)
     # `aud` : tolérant par construction — derrière compose, l'assertion vise
-    # http://ga-mock:8000/token pendant que le serveur se voit autrement.
-    # Exiger l'égalité stricte casserait le cas nominal ; on vérifie la forme.
+    # http://ga-mock:8000/token pendant que le serveur se voit autrement. Le
+    # vendeur, lui, exige l'égalité stricte ; on vérifie la FORME, avec son
+    # message (écart assumé, consigné : aud-tolerant).
     aud = str(claims.get("aud", ""))
-    if aud and not aud.rstrip("/").endswith("/token"):
-        raise ErreurToken("invalid_grant", "Invalid JWT: aud must target the token endpoint.")
+    if not aud or not aud.rstrip("/").endswith("/token"):
+        raise ErreurToken("invalid_grant", _MESSAGE_AUD)
     return claims
+
+
+def reponse_token(claims: dict[str, Any]) -> dict[str, Any]:
+    """Le corps 200 : `access_token`… ou `id_token` SEUL.
+
+    Attesté : dès qu'UN des scopes demandés n'est pas un scope OAuth reconnu —
+    y compris quand un autre l'est — le endpoint bascule et rend un id_token
+    sans access_token. Ici « reconnu » vaut pour les scopes Analytics : le
+    mock n'a pas d'autre univers à offrir, et un consommateur qui demande
+    autre chose n'obtiendra de toute façon rien d'exploitable sur cette
+    surface.
+    """
+    scopes = str(claims.get("scope", "")).split()
+    if all(s in SCOPES_ACCEPTES for s in scopes):
+        return emettre_bearer()
+    return {"id_token": emettre_id_token(claims)}
+
+
+def emettre_id_token(claims: dict[str, Any]) -> str:
+    """JWT d'identité signé par la bi-clé factice, claims calqués sur ceux
+    relevés chez le vendeur : `aud` porte le scope demandé, `iss` reste
+    accounts.google.com, `sub` l'identifiant numérique du compte."""
+    quand = int(virtual_now().timestamp())
+    entete = b64url(
+        json.dumps({"alg": "RS256", "kid": keypair.PRIVATE_KEY_ID, "typ": "JWT"}).encode()
+    )
+    charge = b64url(
+        json.dumps(
+            {
+                "aud": str(claims.get("scope", "")),
+                "azp": settings.sa_email,
+                "email": settings.sa_email,
+                "email_verified": True,
+                "exp": quand + BEARER_TTL_SECONDES,
+                "iat": quand,
+                "iss": "https://accounts.google.com",
+                "sub": CLIENT_ID,
+            }
+        ).encode()
+    )
+    return f"{entete}.{charge}.{b64url(sign(f'{entete}.{charge}'.encode(), keypair.N, keypair.D))}"
 
 
 def emettre_bearer() -> dict[str, Any]:
@@ -205,7 +293,7 @@ def fixture_service_account(base_url: str) -> dict[str, str]:
         "private_key_id": keypair.PRIVATE_KEY_ID,
         "private_key": keypair.PEM_PRIVE,
         "client_email": settings.sa_email,
-        "client_id": "104727004242420010001",
+        "client_id": CLIENT_ID,
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
         "token_uri": f"{base_url}/token",
         "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",

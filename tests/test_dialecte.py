@@ -141,7 +141,11 @@ def test_agregations_reserved_et_totaux_exacts(client, bearer):
 def test_metrique_inconnue(client, bearer):
     reponse = client.post(CHEMIN, headers=bearer, json=_corps(metrics=[{"name": "pasUneMetrique"}]))
     assert reponse.status_code == 400
-    assert reponse.json()["error"]["message"] == "Field pasUneMetrique is not a valid metric."
+    assert reponse.json()["error"]["message"] == (
+        "Field pasUneMetrique is not a valid metric.  For a list of valid "
+        "dimensions and metrics, see https://developers.google.com/analytics/"
+        "devguides/reporting/data/v1/api-schema "
+    )
 
 
 def test_bornes_dimensions_et_metriques(client, bearer):
@@ -212,18 +216,90 @@ def test_keep_empty_rows_spine_calendaire(client, bearer):
 
 
 def test_property_quota(client, bearer):
+    """Les SIX seaux du message PropertyQuota, ni plus ni moins.
+
+    La liste est celle du document de découverte v1beta (rév. 20260831) :
+    en oublier un — `tokensPerProjectPerHour` a manqué jusqu'au premier rejeu
+    contre le service réel — fait croire au consommateur qu'un plafond
+    n'existe pas, alors que c'est justement celui qui l'arrête en premier.
+    """
     premier = _rapport(client, bearer, _corps(returnPropertyQuota=True))
     quota1 = premier["propertyQuota"]
     assert set(quota1) == {
         "tokensPerDay",
         "tokensPerHour",
+        "tokensPerProjectPerHour",
         "concurrentRequests",
         "serverErrorsPerProjectPerHour",
         "potentiallyThresholdedRequestsPerHour",
     }
     second = _rapport(client, bearer, _corps(returnPropertyQuota=True))
     quota2 = second["propertyQuota"]
-    assert quota1["tokensPerDay"]["remaining"] - quota2["tokensPerDay"]["remaining"] == 10
+    # Un rapport est décompté de TOUS les seaux de jetons à la fois. Un rapport
+    # court et étroit coûte UN jeton — mesuré sur le service réel.
+    for seau in ("tokensPerDay", "tokensPerHour", "tokensPerProjectPerHour"):
+        assert quota1[seau]["consumed"] == 1
+        assert quota1[seau]["remaining"] - quota2[seau]["remaining"] == 1
+    # Les seaux qu'une requête ne consomme pas rendent quand même leurs DEUX
+    # champs : `consumed: 0` est présent, contrairement à la règle proto3
+    # habituelle. Relevé sur le service.
+    assert quota1["concurrentRequests"] == {"consumed": 0, "remaining": 10}
+    assert quota1["serverErrorsPerProjectPerHour"] == {"consumed": 0, "remaining": 10}
+    assert quota1["potentiallyThresholdedRequestsPerHour"] == {"consumed": 0, "remaining": 120}
+
+
+def test_seau_projet_heure_vaut_35_pourcent_de_l_horaire(client, bearer):
+    """« Analytics Properties can use up to 35% of their tokens per project per
+    hour » — 14 000 contre 40 000, valeurs par défaut du vendeur, confirmées
+    sur une vraie propriété."""
+    quota = _rapport(client, bearer, _corps(returnPropertyQuota=True))["propertyQuota"]
+    assert quota["tokensPerHour"]["remaining"] == 40_000 - 1
+    assert quota["tokensPerProjectPerHour"]["remaining"] == 14_000 - 1
+
+
+def test_cout_en_jetons_croit_avec_la_requete(client, bearer):
+    """Le coût N'EST PAS forfaitaire — modèle calé sur sept mesures réelles :
+    un rapport étroit sur 30 jours coûte 1, le même sur 365 jours coûte 7, et
+    9 dimensions par 10 métriques sur 30 jours coûtent 4."""
+
+    def cout(**surcharges):
+        rapport = _rapport(client, bearer, _corps(returnPropertyQuota=True, **surcharges))
+        return rapport["propertyQuota"]["tokensPerDay"]["consumed"]
+
+    mois = [{"startDate": "2026-06-01", "endDate": "2026-06-30"}]
+    an = [{"startDate": "2025-07-16", "endDate": "2026-07-15"}]
+    neuf_dims = [
+        {"name": n}
+        for n in (
+            "date",
+            "country",
+            "city",
+            "browser",
+            "deviceCategory",
+            "sessionSource",
+            "sessionMedium",
+            "pagePath",
+            "eventName",
+        )
+    ]
+    dix_metriques = [
+        {"name": n}
+        for n in (
+            "sessions",
+            "totalUsers",
+            "activeUsers",
+            "newUsers",
+            "engagedSessions",
+            "engagementRate",
+            "bounceRate",
+            "averageSessionDuration",
+            "screenPageViews",
+            "eventCount",
+        )
+    ]
+    assert cout(dateRanges=mois) == 1
+    assert cout(dateRanges=an) == 7
+    assert cout(dateRanges=mois, dimensions=neuf_dims, metrics=dix_metriques, limit=10) == 4
 
 
 def test_cohortes_refusees_explicitement(client, bearer):
@@ -303,5 +379,12 @@ def test_plage_inversee_et_date_invalide(client, bearer):
         headers=bearer,
         json=_corps(dateRanges=[{"startDate": "01/06/2026", "endDate": "2026-06-07"}]),
     )
+    assert inversee.json()["error"]["message"] == (
+        "start_date must be less than or equal to end_date. "
+        "start_date = 2026-06-07 and end_date = 2026-06-01"
+    )
     assert invalide.status_code == 400
-    assert "Invalid date" in invalide.json()["error"]["message"]
+    assert invalide.json()["error"]["message"] == (
+        "Invalid startDate : 01/06/2026. startDate must be YYYY-MM-DD, "
+        "NdaysAgo, yesterday, or today."
+    )

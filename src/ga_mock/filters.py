@@ -2,9 +2,10 @@
 
 Arbre récursif : `andGroup` / `orGroup` / `notExpression` / `filter` — un nœud
 porte EXACTEMENT un de ces quatre champs. La feuille (`filter`) porte
-`fieldName` + un des quatre prédicats : `stringFilter` (matchType,
+`fieldName` + un des cinq prédicats : `stringFilter` (matchType,
 caseSensitive défaut false), `inListFilter`, `numericFilter` (int64Value en
-CHAÎNE ou doubleValue), `betweenFilter` (bornes incluses).
+CHAÎNE ou doubleValue), `betweenFilter` (bornes incluses) et `emptyFilter`
+(message VIDE côté proto — le `{}` est significatif, pas un oubli).
 
 La compilation se fait à la validation : une expression invalide doit sortir
 en 400 AVANT toute agrégation, comme chez Google — pas au milieu du calcul.
@@ -76,6 +77,13 @@ def _predicat_chaine(filtre: dict[str, Any]) -> Callable[[Any], bool]:
     return operations[match_type]
 
 
+# « A filter for empty values such as "(not set)" and "" values » (référence
+# v1beta). La chaîne vide et `(not set)` sont explicitement nommées ; les
+# autres marqueurs parenthésés de GA (`(none)`, `(direct)`…) désignent des
+# valeurs RÉELLES, pas des absences — les inclure ferait taire des lignes que
+# le vrai service rend. Ensemble exact consigné comme non attesté.
+VALEURS_VIDES = frozenset({"", "(not set)"})
+
 _OPERATIONS_NUMERIQUES: dict[str, Callable[[float, float], bool]] = {
     "EQUAL": lambda v, ref: v == ref,
     "LESS_THAN": lambda v, ref: v < ref,
@@ -114,8 +122,13 @@ def _feuille(filtre: dict[str, Any], champs: list[str], sorte: str) -> Predicat:
         borne_basse = _nombre(brut.get("fromValue", {}))
         borne_haute = _nombre(brut.get("toValue", {}))
         return lambda valeurs: borne_basse <= _en_nombre(valeurs[nom]) <= borne_haute
+    if "emptyFilter" in filtre:
+        # Message proto VIDE : `{}` est la charge normale, il n'y a rien à
+        # valider dedans — et un `{"x": 1}` fantaisiste ne doit pas la refuser.
+        return lambda valeurs: str(valeurs[nom]) in VALEURS_VIDES
     raise ErreurFiltre(
-        "A filter must set one of stringFilter, inListFilter, numericFilter or betweenFilter."
+        "A filter must set one of stringFilter, inListFilter, numericFilter, "
+        "betweenFilter or emptyFilter."
     )
 
 

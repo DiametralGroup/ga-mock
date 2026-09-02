@@ -135,6 +135,12 @@ paths:
                   - name
                   title: DimensionSpec
                   type: object
+                EmptyFilter:
+                  description: 'Message proto VIDE : `{}` est la charge attendue,
+                    pas un oubli.'
+                  properties: {}
+                  title: EmptyFilter
+                  type: object
                 FilterExpression:
                   properties:
                     andGroup:
@@ -186,6 +192,13 @@ paths:
                       anyOf:
                       - $ref: '#/$defs/BetweenFilter'
                       - type: 'null'
+                    emptyFilter:
+                      anyOf:
+                      - $ref: '#/$defs/EmptyFilter'
+                      - type: 'null'
+                      x-ga-confidence: unverified
+                      x-ga-note: matches "" and "(not set)"; the exact placeholder
+                        set is not attested
                   required:
                   - fieldName
                   title: FilterLeaf
@@ -284,7 +297,8 @@ paths:
               properties:
                 dateRanges:
                   default: []
-                  description: 1 to 4 ranges.
+                  description: 1 to 4 ranges; dates must fall between 2015-08-14 and
+                    2999-12-31.
                   items:
                     $ref: '#/$defs/DateRange'
                   title: Dateranges
@@ -298,7 +312,7 @@ paths:
                   type: array
                 metrics:
                   default: []
-                  description: 1 to 10.
+                  description: 'Up to 10. Optional: a dimensions-only report is valid.'
                   items:
                     $ref: '#/$defs/MetricSpec'
                   title: Metrics
@@ -317,10 +331,9 @@ paths:
                   - type: integer
                   - type: string
                   - type: 'null'
+                  description: int64 accepted as number or string; over 250000 silently
+                    capped; 0 falls back to the 10000 default; negative is rejected.
                   title: Limit
-                  x-ga-confidence: unverified
-                  x-ga-note: int64 accepted as number or string; over 250000 silently
-                    capped; 0 falls back to the 10000 default.
                 offset:
                   anyOf:
                   - type: integer
@@ -335,7 +348,8 @@ paths:
                   type: array
                 metricAggregations:
                   default: []
-                  description: TOTAL, MAXIMUM and MINIMUM are supported.
+                  description: TOTAL, MAXIMUM and MINIMUM are served. COUNT is a valid
+                    enum value that the service itself rejects.
                   items:
                     type: string
                   title: Metricaggregations
@@ -348,6 +362,12 @@ paths:
                   default: false
                   title: Returnpropertyquota
                   type: boolean
+                currencyCode:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  description: ISO 4217; echoed back in metadata.currencyCode.
+                  title: Currencycode
               title: RunReportRequest
               type: object
   /v1beta/properties/{property_id}:batchRunReports:
@@ -457,6 +477,12 @@ paths:
                   - name
                   title: DimensionSpec
                   type: object
+                EmptyFilter:
+                  description: 'Message proto VIDE : `{}` est la charge attendue,
+                    pas un oubli.'
+                  properties: {}
+                  title: EmptyFilter
+                  type: object
                 FilterExpression:
                   properties:
                     andGroup:
@@ -508,6 +534,13 @@ paths:
                       anyOf:
                       - $ref: '#/$defs/BetweenFilter'
                       - type: 'null'
+                    emptyFilter:
+                      anyOf:
+                      - $ref: '#/$defs/EmptyFilter'
+                      - type: 'null'
+                      x-ga-confidence: unverified
+                      x-ga-note: matches "" and "(not set)"; the exact placeholder
+                        set is not attested
                   required:
                   - fieldName
                   title: FilterLeaf
@@ -591,7 +624,8 @@ paths:
                   properties:
                     dateRanges:
                       default: []
-                      description: 1 to 4 ranges.
+                      description: 1 to 4 ranges; dates must fall between 2015-08-14
+                        and 2999-12-31.
                       items:
                         $ref: '#/$defs/DateRange'
                       title: Dateranges
@@ -605,7 +639,8 @@ paths:
                       type: array
                     metrics:
                       default: []
-                      description: 1 to 10.
+                      description: 'Up to 10. Optional: a dimensions-only report is
+                        valid.'
                       items:
                         $ref: '#/$defs/MetricSpec'
                       title: Metrics
@@ -624,10 +659,10 @@ paths:
                       - type: integer
                       - type: string
                       - type: 'null'
+                      description: int64 accepted as number or string; over 250000
+                        silently capped; 0 falls back to the 10000 default; negative
+                        is rejected.
                       title: Limit
-                      x-ga-confidence: unverified
-                      x-ga-note: int64 accepted as number or string; over 250000 silently
-                        capped; 0 falls back to the 10000 default.
                     offset:
                       anyOf:
                       - type: integer
@@ -642,7 +677,8 @@ paths:
                       type: array
                     metricAggregations:
                       default: []
-                      description: TOTAL, MAXIMUM and MINIMUM are supported.
+                      description: TOTAL, MAXIMUM and MINIMUM are served. COUNT is
+                        a valid enum value that the service itself rejects.
                       items:
                         type: string
                       title: Metricaggregations
@@ -655,6 +691,12 @@ paths:
                       default: false
                       title: Returnpropertyquota
                       type: boolean
+                    currencyCode:
+                      anyOf:
+                      - type: string
+                      - type: 'null'
+                      description: ISO 4217; echoed back in metadata.currencyCode.
+                      title: Currencycode
                   title: RunReportRequest
                   type: object
                 StringFilter:
@@ -747,6 +789,23 @@ components:
           default: analyticsData#batchRunReports
       type: object
       title: BatchRunReportsResponse
+    ComparisonMetadata:
+      properties:
+        apiName:
+          type: string
+          title: Apiname
+        uiName:
+          type: string
+          title: Uiname
+        description:
+          type: string
+          title: Description
+      type: object
+      required:
+      - apiName
+      - uiName
+      - description
+      title: ComparisonMetadata
     DimensionHeader:
       properties:
         name:
@@ -770,10 +829,19 @@ components:
         category:
           type: string
           title: Category
+        deprecatedApiNames:
+          items:
+            type: string
+          type: array
+          title: Deprecatedapinames
+          description: Former API names still announced; key absent when none.
+          default: []
         customDefinition:
-          type: boolean
+          anyOf:
+          - type: boolean
+          - type: 'null'
           title: Customdefinition
-          default: false
+          description: Key ABSENT when false — never serialized for standard fields.
       type: object
       required:
       - apiName
@@ -832,6 +900,13 @@ components:
           type: array
           title: Metrics
           default: []
+        comparisons:
+          items:
+            $ref: '#/components/schemas/ComparisonMetadata'
+          type: array
+          title: Comparisons
+          description: Stock GA4 comparisons; absent for properties/0.
+          default: []
       type: object
       required:
       - name
@@ -866,10 +941,19 @@ components:
         type:
           type: string
           title: Type
+        deprecatedApiNames:
+          items:
+            type: string
+          type: array
+          title: Deprecatedapinames
+          description: Former API names still announced; key absent when none.
+          default: []
         customDefinition:
-          type: boolean
+          anyOf:
+          - type: boolean
+          - type: 'null'
           title: Customdefinition
-          default: false
+          description: Key ABSENT when false.
       type: object
       required:
       - apiName
@@ -906,9 +990,13 @@ components:
         tokensPerDay:
           $ref: '#/components/schemas/QuotaStatus'
           x-ga-confidence: unverified
-          x-ga-note: flat 10-token cost per report in this mock
+          x-ga-note: token cost is interpolated from seven measurements, not the vendor's
+            formula
         tokensPerHour:
           $ref: '#/components/schemas/QuotaStatus'
+        tokensPerProjectPerHour:
+          $ref: '#/components/schemas/QuotaStatus'
+          description: 35% of the hourly token bucket — 14000 for a standard property.
         concurrentRequests:
           $ref: '#/components/schemas/QuotaStatus'
         serverErrorsPerProjectPerHour:
@@ -919,6 +1007,7 @@ components:
       required:
       - tokensPerDay
       - tokensPerHour
+      - tokensPerProjectPerHour
       - concurrentRequests
       - serverErrorsPerProjectPerHour
       - potentiallyThresholdedRequestsPerHour
@@ -926,18 +1015,17 @@ components:
     QuotaStatus:
       properties:
         consumed:
-          anyOf:
-          - type: integer
-          - type: 'null'
+          type: integer
           title: Consumed
-          description: Omitted when zero (proto3).
+          description: Always present, zero included — unlike most proto3 ints.
         remaining:
-          anyOf:
-          - type: integer
-          - type: 'null'
+          type: integer
           title: Remaining
-          description: Omitted when zero (proto3).
+          description: Always present, zero included.
       type: object
+      required:
+      - consumed
+      - remaining
       title: QuotaStatus
     ResponseMetaData:
       properties:
@@ -966,6 +1054,7 @@ components:
             $ref: '#/components/schemas/MetricValue'
           type: array
           title: Metricvalues
+          description: Omitted entirely when the report has no metrics.
           default: []
       type: object
       title: Row
@@ -982,6 +1071,7 @@ components:
             $ref: '#/components/schemas/MetricHeader'
           type: array
           title: Metricheaders
+          description: Key ABSENT when the request carries no metrics.
           default: []
         rows:
           items:
@@ -997,7 +1087,8 @@ components:
           title: Totals
           default: []
           x-ga-confidence: unverified
-          x-ga-note: RESERVED_TOTAL on every regular dimension; computed BEFORE metricFilter
+          x-ga-note: RESERVED_TOTAL markers are attested; computing TOTAL BEFORE metricFilter
+            is not
         maximums:
           items:
             $ref: '#/components/schemas/Row'

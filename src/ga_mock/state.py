@@ -12,7 +12,12 @@ from datetime import date, timedelta
 
 from .clock import horloge, virtual_now
 from .dataset.sessions import Session, build_day
-from .errors import MESSAGE_429_HEURE, MESSAGE_429_JOUR, ErreurQuota
+from .errors import (
+    MESSAGE_429_HEURE,
+    MESSAGE_429_JOUR,
+    MESSAGE_429_PROJET_HEURE,
+    ErreurQuota,
+)
 from .injection import engine
 from .settings import settings
 
@@ -23,21 +28,33 @@ class MockState:
         self._jours: dict[date, tuple[Session, ...]] = {}
         self.quota_jour_consomme: int = 0
         self.quota_heure_consomme: int = 0
+        self.quota_projet_heure_consomme: int = 0
         # UNE seule voie de construction : l'init passe par reset(), sinon le
         # baseline d'injection de l'environnement ne serait appliqué qu'aux
         # resets explicites et jamais au démarrage du conteneur.
         self.reset()
 
     def consommer_quota(self, jetons: int) -> None:
-        """Décompte des jetons de propriété — l'épuisement NATUREL produit la
-        même 429 que le vrai service. Rare avec les plafonds par défaut ;
-        l'injection `quota_exhausted` force le cas sans attendre."""
+        """Décompte des jetons — l'épuisement NATUREL produit la même 429 que le
+        vrai service. Rare avec les plafonds par défaut ; l'injection
+        `quota_exhausted` force le cas sans attendre.
+
+        TROIS seaux, comme chez le vendeur : « An API request consumes a single
+        number of tokens, and that number is deducted from all of the hourly,
+        daily, and per project hourly quotas. » Le seau projet/heure (35 % de
+        l'horaire) est donc celui qui s'épuise EN PREMIER aux plafonds par
+        défaut — un consommateur qui ne surveille que `tokensPerHour` sera
+        surpris ici plutôt qu'en prod.
+        """
         if self.quota_jour_consomme + jetons > settings.quota_tokens_per_day:
             raise ErreurQuota(MESSAGE_429_JOUR)
         if self.quota_heure_consomme + jetons > settings.quota_tokens_per_hour:
             raise ErreurQuota(MESSAGE_429_HEURE)
+        if self.quota_projet_heure_consomme + jetons > settings.quota_tokens_per_project_per_hour:
+            raise ErreurQuota(MESSAGE_429_PROJET_HEURE)
         self.quota_jour_consomme += jetons
         self.quota_heure_consomme += jetons
+        self.quota_projet_heure_consomme += jetons
 
     def day(self, d: date) -> tuple[Session, ...]:
         """Matérialisation paresseuse + cache.
@@ -78,6 +95,7 @@ class MockState:
         self._jours.clear()
         self.quota_jour_consomme = 0
         self.quota_heure_consomme = 0
+        self.quota_projet_heure_consomme = 0
         horloge.offset_secondes = 0.0
         engine.reinitialiser()
 

@@ -71,10 +71,29 @@ Control plane (when `GA_MOCK_ADMIN_ENABLED=true`):
 curl -s -H "X-Mock-Admin-Token: mock-admin-token" http://localhost:8013/__admin/state
 ```
 
-Gotchas that are faithful on purpose: a missing bearer → `401 UNAUTHENTICATED`
-(google.rpc envelope + `WWW-Authenticate`), a bad signature on `/token` →
-`400 invalid_grant` (RFC 6749 envelope), another property id → `403
-PERMISSION_DENIED`.
+Gotchas that are faithful on purpose — every one of these was **recorded on
+the real Google endpoints** (see
+[docs/CONFORMITE-REELLE.md](docs/CONFORMITE-REELLE.md)):
+
+- no `Authorization` header → `401` *"Request is **missing** required
+  authentication credential"*, with a `details[].reason = CREDENTIALS_MISSING`
+  and `WWW-Authenticate: Bearer realm="…"`; a **rejected** bearer → `401`
+  *"Request **had invalid** authentication credentials"*, no `details`, and
+  `error="invalid_token"` on the header. Two different signals, deliberately.
+- an unknown path, an unknown verb **and a wrong HTTP method** all return a
+  `404` **HTML** page from the gateway — never a JSON envelope, never a `405`.
+  `response.json()` raises there, in dev as in prod.
+- a `/token` assertion that cannot be decoded → `400 invalid_request` /
+  `"Bad Request"`, with no explanation at all.
+- a `/token` `scope` that is well-formed but unrecognized → **`200` with an
+  `id_token` and no `access_token`**. A scope typo does not fail loudly.
+- an **unknown JSON key** in a report body → `400`, one `fieldViolation` per
+  key. `dateRange` instead of `dateRanges` breaks here, not silently.
+- an **empty body** is not a parse error — it is an empty message, and fails on
+  `A dateRange is required.`
+- `startDate` must be strictly after **2015-08-13**; a report with **no
+  metrics** is valid; a filter may target a field the report does not group by.
+- another property id → `403 PERMISSION_DENIED`.
 
 ## Two modes, both maintained
 
@@ -104,19 +123,30 @@ and the OpenAPI contract lives in `contracts/ga4-data.openapi.yaml`
 | Aspect | Behavior |
 |---|---|
 | int64 fields (`limit`, `offset`) | accepted as JSON number OR string (proto3 JSON) |
-| metric/dimension values | always serialized as **strings** |
+| metric/dimension values | always serialized as **strings** — doubles follow protobuf's `DoubleToBuffer` (`.15g`, else `.17g`, never 16) |
 | empty repeated fields | key **absent** — never `"rows": []`, and no `"rowCount"` when zero |
 | `date` values | `YYYYMMDD`; relative dates `today`/`yesterday`/`NdaysAgo` resolve against the **virtual clock** |
 | 2–4 `dateRanges` | implicit `dateRange` dimension appended to headers |
 | `limit` | default 10000, values over 250000 silently capped |
 | filters | full `FilterExpression` trees; filter fields must be requested in the report |
 | `metricAggregations` | `TOTAL` (exact global dedup) / `MAXIMUM` / `MINIMUM` with `RESERVED_*` markers |
-| `returnPropertyQuota` | the five standard buckets, decremented per report |
-| errors | `{"error": {code, message, status}}` with matching HTTP code; `/token` speaks RFC 6749 instead |
+| `returnPropertyQuota` | the **six** standard buckets — `tokensPerProjectPerHour` (35% of the hourly one) runs out first; `consumed` is always present, `0` included; a report costs 1 to 7 tokens depending on span and cell count |
+| filter leaves | `stringFilter`, `inListFilter`, `numericFilter`, `betweenFilter`, `emptyFilter` |
+| method errors | `{"error": {code, message, status}}` with matching HTTP code; `/token` speaks RFC 6749 instead |
+| routing errors | an HTML `404` from the gateway — no envelope, and no `405` anywhere |
 
-Everything not attested against the public reference is quarantined in
-[docs/UNVERIFIED-FIELDS.md](docs/UNVERIFIED-FIELDS.md) — a test fails if an
-approximation is not registered there.
+The mock was replayed against a **real GA4 property on 2026-09-02**: 53 shape
+cases conform, and 21 error messages match the vendor character for character.
+The full minutes — what was corrected, what was already right, and what is
+deliberately different — are in
+[docs/CONFORMITE-REELLE.md](docs/CONFORMITE-REELLE.md); what could not be
+observed stays quarantined in
+[docs/UNVERIFIED-FIELDS.md](docs/UNVERIFIED-FIELDS.md), where a test fails if
+an approximation is not registered. `make compare` runs the replay again.
+
+One gap is knowingly open: the generated world never emits `(not set)`, which
+the real API returns on nearly every dimension. Closing it means changing the
+world at constant seed — see CONFORMITE-REELLE §6.
 
 ## The dataset
 
@@ -176,6 +206,7 @@ Scopes are globs (`*:runReport`, `/v1beta/*`, `/token`, `*`);
 | `GA_MOCK_ADMIN_ENABLED` | `false` | mounts `/__admin` (absent otherwise) |
 | `GA_MOCK_ADMIN_TOKEN` | `mock-admin-token` | `X-Mock-Admin-Token` value |
 | `GA_MOCK_QUOTA_TOKENS_PER_DAY` / `_PER_HOUR` | `200000` / `40000` | property quota buckets |
+| `GA_MOCK_QUOTA_TOKENS_PER_PROJECT_PER_HOUR` | `14000` | project bucket — 35% of the hourly one, per Google |
 | `GA_MOCK_RATE_LIMIT_AFTER` / `GA_MOCK_RETRY_AFTER` | — / `1` | baseline rate-limit injection |
 
 ## Development
@@ -188,7 +219,15 @@ make format      # ruff format + autofix
 make run         # local server with the control plane enabled
 make image       # docker build
 make contract    # regenerate contracts/ga4-data.openapi.yaml — REVIEW the diff
+make compare     # replay against a REAL GA4 property (GA_REAL_SA, GA_REAL_PROPERTY)
 ```
+
+`make compare` is how an approximation stops being one: it sends the same ~45
+cases to `analyticsdata.googleapis.com` and to the in-process mock, then diffs
+the response *shapes* (key presence, JSON types, enum values, error wordings) —
+never the numbers, since the real property is not Boréal Conseil.
+`make compare ARGS=--vocabulaire` compares the VALUES of bounded dimensions
+instead, which is what settles questions like accents in `region`/`city`.
 
 The fake RSA keypair is committed on purpose (it authenticates a mock, i.e.
 nothing); `scripts/generate_keypair.py` regenerates it — knowing that this

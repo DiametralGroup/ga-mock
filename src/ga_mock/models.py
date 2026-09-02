@@ -19,26 +19,26 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-# Comportements approximés ou aux wordings non attestés hors ligne. Chaque
-# identifiant DOIT apparaître dans docs/UNVERIFIED-FIELDS.md (test dédié).
+# Comportements approximés ou aux wordings non attestés. Chaque identifiant
+# DOIT apparaître dans docs/UNVERIFIED-FIELDS.md (test dédié). Ce qui a été
+# RELEVÉ sur le service réel en sort et passe dans docs/CONFORMITE-REELLE.md —
+# c'est le seul mouvement autorisé dans ce sens.
 UNVERIFIED_BEHAVIORS: tuple[str, ...] = (
-    "messages-erreurs-validation",
-    "messages-oauth-token",
-    "ordre-par-defaut",
+    "suggestions-did-you-mean",
+    "raison-parseur-json",
+    "ordre-par-defaut-secondaire",
     "regle-semaine",
     "fallback-session-campaign-name",
-    "type-keyevents",
     "fanout-inter-portees",
-    "marqueurs-reserved",
-    "quota-cout-forfaitaire",
-    "www-authenticate-realm",
-    "enveloppe-404-405",
-    "geo-sans-accents",
+    "total-avant-having",
+    "cout-jetons-interpole",
     "retry-after-sur-429",
     "aud-tolerant",
-    "limit-zero-defaut",
-    "position-dimension-daterange",
     "fenetre-assertion-double-horloge",
+    "messages-quota-429",
+    "valeurs-vides-emptyfilter",
+    "spine-keep-empty-rows",
+    "vocabulaire-sans-not-set",
 )
 
 
@@ -89,12 +89,22 @@ class BetweenFilter(BaseModel):
     toValue: NumericValue
 
 
+class EmptyFilter(BaseModel):
+    """Message proto VIDE : `{}` est la charge attendue, pas un oubli."""
+
+
 class FilterLeaf(BaseModel):
     fieldName: str
     stringFilter: StringFilter | None = None
     inListFilter: InListFilter | None = None
     numericFilter: NumericFilter | None = None
     betweenFilter: BetweenFilter | None = None
+    emptyFilter: EmptyFilter | None = Field(
+        default=None,
+        json_schema_extra=_unverified(
+            'matches "" and "(not set)"; the exact placeholder set is not attested'
+        ),
+    )
 
 
 class FilterExpressionList(BaseModel):
@@ -124,27 +134,40 @@ class OrderBy(BaseModel):
 
 
 class RunReportRequest(BaseModel):
-    dateRanges: list[DateRange] = Field(default=[], description="1 to 4 ranges.")
+    dateRanges: list[DateRange] = Field(
+        default=[],
+        description="1 to 4 ranges; dates must fall between 2015-08-14 and 2999-12-31.",
+    )
     dimensions: list[DimensionSpec] = Field(default=[], description="Up to 9.")
-    metrics: list[MetricSpec] = Field(default=[], description="1 to 10.")
+    metrics: list[MetricSpec] = Field(
+        default=[],
+        description="Up to 10. Optional: a dimensions-only report is valid.",
+    )
     dimensionFilter: FilterExpression | None = None
     metricFilter: FilterExpression | None = Field(
         default=None, description="Applied AFTER aggregation, on requested metrics."
     )
     limit: int | str | None = Field(
         default=None,
-        json_schema_extra=_unverified(
+        description=(
             "int64 accepted as number or string; over 250000 silently capped; "
-            "0 falls back to the 10000 default."
+            "0 falls back to the 10000 default; negative is rejected."
         ),
     )
     offset: int | str | None = None
     orderBys: list[OrderBy] = []
     metricAggregations: list[str] = Field(
-        default=[], description="TOTAL, MAXIMUM and MINIMUM are supported."
+        default=[],
+        description=(
+            "TOTAL, MAXIMUM and MINIMUM are served. COUNT is a valid enum value "
+            "that the service itself rejects."
+        ),
     )
     keepEmptyRows: bool = False
     returnPropertyQuota: bool = False
+    currencyCode: str | None = Field(
+        default=None, description="ISO 4217; echoed back in metadata.currencyCode."
+    )
 
 
 class BatchRunReportsRequest(BaseModel):
@@ -175,7 +198,9 @@ class Row(BaseModel):
     dimensionValues: list[DimensionValue] = Field(
         default=[], description="Omitted entirely when the report has no dimensions."
     )
-    metricValues: list[MetricValue] = []
+    metricValues: list[MetricValue] = Field(
+        default=[], description="Omitted entirely when the report has no metrics."
+    )
 
 
 class ResponseMetaData(BaseModel):
@@ -184,15 +209,20 @@ class ResponseMetaData(BaseModel):
 
 
 class QuotaStatus(BaseModel):
-    consumed: int | None = Field(default=None, description="Omitted when zero (proto3).")
-    remaining: int | None = Field(default=None, description="Omitted when zero (proto3).")
+    consumed: int = Field(description="Always present, zero included — unlike most proto3 ints.")
+    remaining: int = Field(description="Always present, zero included.")
 
 
 class PropertyQuota(BaseModel):
     tokensPerDay: QuotaStatus = Field(
-        json_schema_extra=_unverified("flat 10-token cost per report in this mock")
+        json_schema_extra=_unverified(
+            "token cost is interpolated from seven measurements, not the vendor's formula"
+        )
     )
     tokensPerHour: QuotaStatus
+    tokensPerProjectPerHour: QuotaStatus = Field(
+        description="35% of the hourly token bucket — 14000 for a standard property."
+    )
     concurrentRequests: QuotaStatus
     serverErrorsPerProjectPerHour: QuotaStatus
     potentiallyThresholdedRequestsPerHour: QuotaStatus
@@ -200,12 +230,14 @@ class PropertyQuota(BaseModel):
 
 class RunReportResponse(BaseModel):
     dimensionHeaders: list[DimensionHeader] = []
-    metricHeaders: list[MetricHeader] = []
+    metricHeaders: list[MetricHeader] = Field(
+        default=[], description="Key ABSENT when the request carries no metrics."
+    )
     rows: list[Row] = Field(default=[], description="Key ABSENT when there are no rows.")
     totals: list[Row] = Field(
         default=[],
         json_schema_extra=_unverified(
-            "RESERVED_TOTAL on every regular dimension; computed BEFORE metricFilter"
+            "RESERVED_TOTAL markers are attested; computing TOTAL BEFORE metricFilter is not"
         ),
     )
     maximums: list[Row] = []
@@ -228,7 +260,12 @@ class DimensionMetadata(BaseModel):
     uiName: str
     description: str
     category: str
-    customDefinition: bool = False
+    deprecatedApiNames: list[str] = Field(
+        default=[], description="Former API names still announced; key absent when none."
+    )
+    customDefinition: bool | None = Field(
+        default=None, description="Key ABSENT when false — never serialized for standard fields."
+    )
 
 
 class MetricMetadata(BaseModel):
@@ -237,13 +274,25 @@ class MetricMetadata(BaseModel):
     description: str
     category: str
     type: str
-    customDefinition: bool = False
+    deprecatedApiNames: list[str] = Field(
+        default=[], description="Former API names still announced; key absent when none."
+    )
+    customDefinition: bool | None = Field(default=None, description="Key ABSENT when false.")
+
+
+class ComparisonMetadata(BaseModel):
+    apiName: str
+    uiName: str
+    description: str
 
 
 class MetadataResponse(BaseModel):
     name: str
     dimensions: list[DimensionMetadata] = []
     metrics: list[MetricMetadata] = []
+    comparisons: list[ComparisonMetadata] = Field(
+        default=[], description="Stock GA4 comparisons; absent for properties/0."
+    )
 
 
 class TokenResponse(BaseModel):

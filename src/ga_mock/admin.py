@@ -63,6 +63,9 @@ def etat(request: Request) -> JSONResponse:
                 - state.quota_jour_consomme,
                 "tokens_per_hour_remaining": settings.quota_tokens_per_hour
                 - state.quota_heure_consomme,
+                "tokens_per_project_per_hour_remaining": (
+                    settings.quota_tokens_per_project_per_hour - state.quota_projet_heure_consomme
+                ),
             },
         }
     )

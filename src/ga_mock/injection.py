@@ -21,7 +21,7 @@ from typing import Any, Literal
 
 from fastapi.responses import JSONResponse
 
-from .errors import MESSAGE_401, MESSAGE_429_JOUR, erreur
+from .errors import MESSAGE_401_INVALIDE, MESSAGE_429_JOUR, erreur
 from .settings import settings
 
 Kind = Literal["rate_limit", "status", "latency", "auth_reject", "quota_exhausted"]
@@ -128,7 +128,10 @@ class MoteurInjection:
         actives = [r for r in self.regles if fnmatch(chemin, r.scope)]
         for regle in (r for r in actives if r.kind == "auth_reject"):
             self._consommer(regle)
-            return erreur(401, MESSAGE_401)
+            # Variante « jeton refusé » : une panne d'auth injectée simule un
+            # vendeur qui rejette des credentials PRÉSENTS, pas un client qui
+            # aurait oublié son en-tête.
+            return erreur(401, MESSAGE_401_INVALIDE)
         for regle in (r for r in actives if r.kind == "latency"):
             time.sleep(regle.seconds)
             self._consommer(regle)

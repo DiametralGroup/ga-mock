@@ -32,6 +32,10 @@ class Settings:
     admin_token: str = "mock-admin-token"
     quota_tokens_per_day: int = 200_000
     quota_tokens_per_hour: int = 40_000
+    # 35 % du seau horaire — la règle est écrite noir sur blanc dans le
+    # discovery Google : « Analytics Properties can use up to 35% of their
+    # tokens per project per hour », soit 14 000 pour une propriété standard.
+    quota_tokens_per_project_per_hour: int = 14_000
     rate_limit_after: int | None = None
     retry_after: int = 1
 
@@ -45,6 +49,9 @@ class Settings:
         self.admin_token = env.get("GA_MOCK_ADMIN_TOKEN", "mock-admin-token")
         self.quota_tokens_per_day = int(env.get("GA_MOCK_QUOTA_TOKENS_PER_DAY", "200000"))
         self.quota_tokens_per_hour = int(env.get("GA_MOCK_QUOTA_TOKENS_PER_HOUR", "40000"))
+        self.quota_tokens_per_project_per_hour = int(
+            env.get("GA_MOCK_QUOTA_TOKENS_PER_PROJECT_PER_HOUR", "14000")
+        )
         brut = env.get("GA_MOCK_RATE_LIMIT_AFTER", "").strip()
         self.rate_limit_after = int(brut) if brut else None
         self.retry_after = int(env.get("GA_MOCK_RETRY_AFTER", "1"))

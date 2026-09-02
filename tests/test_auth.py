@@ -8,7 +8,7 @@ testées, y compris le vieillissement des bearers par l'horloge virtuelle.
 import json
 
 from ga_mock import keypair
-from ga_mock.auth import build_assertion
+from ga_mock.auth import build_assertion, fixture_service_account
 from ga_mock.clock import horloge
 from ga_mock.rsa_min import b64url, b64url_decode, sign, verify
 
@@ -90,18 +90,75 @@ def test_duree_excessive(client):
     assert "short-lived" in reponse.json()["error_description"]
 
 
-def test_scope_invalide(client):
+def test_scope_non_reconnu_rend_un_id_token_pas_une_erreur(client):
+    """LE piège du flux service account, relevé sur le vrai endpoint : un scope
+    bien formé mais non reconnu ne produit PAS d'erreur — 200, et un `id_token`
+    SEUL. Le client qui lit `["access_token"]` casse ici comme en prod."""
     reponse = _demander_token(
         client, build_assertion(scope="https://www.googleapis.com/auth/cloud-platform")
     )
+    assert reponse.status_code == 200
+    corps = reponse.json()
+    assert set(corps) == {"id_token"}
+    entete, charge, _ = corps["id_token"].split(".")
+    assert json.loads(b64url_decode(entete))["kid"] == keypair.PRIVATE_KEY_ID
+    claims = json.loads(b64url_decode(charge))
+    assert claims["iss"] == "https://accounts.google.com"
+    assert claims["aud"] == "https://www.googleapis.com/auth/cloud-platform"
+    assert claims["email_verified"] is True
+    # `sub` et le `client_id` du JSON de compte de service sont le MÊME nombre.
+    assert claims["sub"] == fixture_service_account("http://x")["client_id"]
+
+
+def test_scope_mixte_bascule_aussi_en_id_token(client):
+    """Un seul scope inconnu suffit, même accompagné d'un scope valide."""
+    melange = "https://www.googleapis.com/auth/analytics.readonly https://exemple.test/x"
+    reponse = _demander_token(client, build_assertion(scope=melange))
+    assert reponse.status_code == 200
+    assert set(reponse.json()) == {"id_token"}
+
+
+def test_scope_vide_est_une_vraie_erreur(client):
+    reponse = _demander_token(client, build_assertion(scope=""))
     assert reponse.status_code == 400
-    assert reponse.json()["error"] == "invalid_scope"
+    corps = reponse.json()
+    assert corps["error"] == "invalid_scope"
+    assert corps["error_description"] == "Invalid OAuth scope or ID token audience provided."
 
 
 def test_aud_invalide(client):
     reponse = _demander_token(client, build_assertion(aud="http://localhost:8012/autre"))
     assert reponse.status_code == 400
-    assert "aud" in reponse.json()["error_description"]
+    corps = reponse.json()
+    assert corps["error"] == "invalid_grant"
+    assert corps["error_description"] == "Invalid JWT: Failed audience check."
+
+
+def test_iat_et_exp_acceptes_en_chaine(client):
+    """Le vendeur accepte `"iat": "1788361815"` — laxisme JSON reproduit."""
+    entete, charge, _ = build_assertion().split(".")
+    claims = json.loads(b64url_decode(charge))
+    claims["iat"], claims["exp"] = str(claims["iat"]), str(claims["exp"])
+    charge = b64url(json.dumps(claims).encode())
+    signature = b64url(sign(f"{entete}.{charge}".encode(), keypair.N, keypair.D))
+    reponse = _demander_token(client, f"{entete}.{charge}.{signature}")
+    assert reponse.status_code == 200
+    assert "access_token" in reponse.json()
+
+
+def test_iat_ou_exp_absents_ont_leur_propre_message(client):
+    for cle, attendu in (
+        ("iat", "Invalid JWT: iat (issued at) is not set."),
+        ("exp", "Invalid JWT: exp (expiration time) is not set."),
+    ):
+        entete, charge, _ = build_assertion().split(".")
+        claims = json.loads(b64url_decode(charge))
+        del claims[cle]
+        charge = b64url(json.dumps(claims).encode())
+        signature = b64url(sign(f"{entete}.{charge}".encode(), keypair.N, keypair.D))
+        reponse = _demander_token(client, f"{entete}.{charge}.{signature}")
+        assert reponse.status_code == 400
+        assert reponse.json()["error_description"] == attendu
 
 
 def test_grant_type_invalide(client):
@@ -112,36 +169,76 @@ def test_grant_type_invalide(client):
     assert reponse.json()["error"] == "unsupported_grant_type"
 
 
-def test_assertion_malformee(client):
-    reponse = _demander_token(client, "pas-un-jwt")
+def test_assertion_indecodable_est_un_invalid_request_laconique(client):
+    """Le vendeur ne DIT PAS ce qui cloche dans une assertion illisible : pas
+    de « 3 segments attendus », pas de segment fautif — `invalid_request` et
+    « Bad Request », point. Un mock plus bavard entraînerait le consommateur à
+    un diagnostic qu'il n'aura jamais."""
+    for cassee in ("pas-un-jwt", "", "aaa.bbb", "@@@.###.$$$"):
+        reponse = _demander_token(client, cassee)
+        assert reponse.status_code == 400, cassee
+        corps = reponse.json()
+        assert corps["error"] == "invalid_request", cassee
+        assert corps["error_description"] == "Bad Request", cassee
+
+
+def test_segment_json_non_objet_est_aussi_bad_request(client):
+    entete, _, signature = build_assertion().split(".")
+    reponse = _demander_token(client, f"{entete}.{b64url(b'42')}.{signature}")
     assert reponse.status_code == 400
-    assert reponse.json()["error_description"].startswith("Invalid JWT")
+    assert reponse.json()["error"] == "invalid_request"
 
 
-def test_alg_hs256_rejete(client):
-    entete = b64url(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+def test_alg_non_rs256_sort_comme_une_signature_fausse(client):
+    """Le vendeur ne distingue pas « mauvais algorithme » de « mauvaise
+    signature » : les deux rendent `Invalid JWT Signature.`"""
     _, charge, signature = build_assertion().split(".")
-    reponse = _demander_token(client, f"{entete}.{charge}.{signature}")
-    assert reponse.status_code == 400
-    assert "RS256" in reponse.json()["error_description"]
+    for entete_brut in ({"alg": "HS256", "typ": "JWT"}, {"alg": "none"}, {"typ": "JWT"}):
+        entete = b64url(json.dumps(entete_brut).encode())
+        reponse = _demander_token(client, f"{entete}.{charge}.{signature}")
+        assert reponse.status_code == 400
+        assert reponse.json()["error_description"] == "Invalid JWT Signature."
 
 
-def test_sans_bearer_enveloppe_google_401(client):
-    reponse = client.post("/v1beta/properties/424242001:runReport", json={})
-    assert reponse.status_code == 401
-    corps = reponse.json()
-    assert corps["error"]["status"] == "UNAUTHENTICATED"
-    assert "authentication credential" in corps["error"]["message"]
-    assert "WWW-Authenticate" in reponse.headers
+def test_401_credential_manquant_contre_401_jeton_refuse(client):
+    """DEUX 401 distincts, relevés sur le vrai service.
 
+    En-tête absent : « is missing required authentication credential », un
+    `details` google.rpc.ErrorInfo `CREDENTIALS_MISSING`, et un
+    `WWW-Authenticate` SANS `error=`. Jeton présent mais refusé : « had invalid
+    authentication credentials », pas de `details`, et `error="invalid_token"`.
+    C'est là-dessus qu'un client décide entre « s'authentifier » et
+    « renouveler ».
+    """
+    absent = client.post("/v1beta/properties/424242001:runReport", json={})
+    assert absent.status_code == 401
+    corps = absent.json()["error"]
+    assert corps["status"] == "UNAUTHENTICATED"
+    assert corps["message"].startswith("Request is missing required authentication credential.")
+    detail = corps["details"][0]
+    assert detail["reason"] == "CREDENTIALS_MISSING"
+    assert detail["domain"] == "googleapis.com"
+    assert detail["metadata"]["method"].endswith("BetaAnalyticsData.RunReport")
+    assert absent.headers["WWW-Authenticate"] == 'Bearer realm="https://accounts.google.com/"'
 
-def test_bearer_bidon(client):
-    reponse = client.post(
+    refuse = client.post(
         "/v1beta/properties/424242001:runReport",
         headers={"Authorization": "Bearer nimporte-quoi"},
         json={},
     )
-    assert reponse.status_code == 401
+    assert refuse.status_code == 401
+    corps = refuse.json()["error"]
+    assert corps["message"].startswith("Request had invalid authentication credentials.")
+    assert "details" not in corps
+    assert 'error="invalid_token"' in refuse.headers["WWW-Authenticate"]
+
+
+def test_methode_rpc_nommee_par_endpoint(client):
+    """Le `details` porte le nom gRPC complet de la méthode VISÉE."""
+    lot = client.post("/v1beta/properties/424242001:batchRunReports", json={})
+    meta = client.get("/v1beta/properties/424242001/metadata")
+    assert lot.json()["error"]["details"][0]["metadata"]["method"].endswith("BatchRunReports")
+    assert meta.json()["error"]["details"][0]["metadata"]["method"].endswith("GetMetadata")
 
 
 def test_bearer_expire_avec_l_horloge(client):

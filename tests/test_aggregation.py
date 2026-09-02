@@ -168,17 +168,49 @@ def test_dimension_inconnue_erreur_google(client, bearer):
     assert reponse.status_code == 400
     corps = reponse.json()
     assert corps["error"]["status"] == "INVALID_ARGUMENT"
-    assert corps["error"]["message"] == "Field pasUneDimension is not a valid dimension."
+    # Wording du vendeur, à l'espacement près (UNE espace après « dimension. »,
+    # DEUX après « metric. »), suivi de l'URL du schéma et d'une espace finale.
+    assert corps["error"]["message"] == (
+        "Field pasUneDimension is not a valid dimension. For a list of valid "
+        "dimensions and metrics, see https://developers.google.com/analytics/"
+        "devguides/reporting/data/v1/api-schema "
+    )
 
 
-def test_sans_metrique_refuse(client, bearer):
+def test_rapport_sans_metrique_est_valide(client, bearer):
+    """« Requests require dimensions and/or metrics » : un rapport de
+    dimensions NUES est légal. Il sort sans `metricHeaders` et ses lignes sans
+    `metricValues` — le mock exigeait une métrique, à tort."""
+    rapport = _rapport(
+        client,
+        bearer,
+        {
+            "dateRanges": [{"startDate": "2026-06-01", "endDate": "2026-06-05"}],
+            "dimensions": [{"name": "date"}],
+        },
+    )
+    assert "metricHeaders" not in rapport
+    assert rapport["rowCount"] == 5
+    assert all("metricValues" not in ligne for ligne in rapport["rows"])
+    assert [ligne["dimensionValues"][0]["value"] for ligne in rapport["rows"]] == [
+        "20260601",
+        "20260602",
+        "20260603",
+        "20260604",
+        "20260605",
+    ]
+
+
+def test_ni_dimension_ni_metrique_refuse(client, bearer):
     reponse = client.post(
         PROPRIETE,
         headers=bearer,
         json={"dateRanges": [{"startDate": "2026-06-01", "endDate": "2026-06-02"}]},
     )
     assert reponse.status_code == 400
-    assert "at least one metric" in reponse.json()["error"]["message"]
+    assert reponse.json()["error"]["message"] == (
+        "Requests require dimensions and/or metrics. Most requests include both."
+    )
 
 
 def test_filtre_exact_sur_canal(client, bearer):
@@ -344,7 +376,75 @@ def test_betweenfilter_inclusif(client, bearer):
         assert 20 <= int(ligne["metricValues"][0]["value"]) <= 100
 
 
-def test_filtre_sur_champ_non_demande_refuse(client, bearer):
+def test_filtre_sur_dimension_non_demandee_est_valide(client, bearer):
+    """Le service N'EXIGE PAS que le champ filtré soit dans le rapport :
+    filtrer sur `country` en groupant par `date` marche. Le mock le refusait —
+    un consommateur voyait un 400 en dev là où la prod répondait 200."""
+    plage = [{"startDate": "2026-06-01", "endDate": "2026-06-07"}]
+
+    def sessions(filtre=None):
+        corps = {
+            "dateRanges": plage,
+            "dimensions": [{"name": "date"}],
+            "metrics": [{"name": "sessions"}],
+        }
+        if filtre:
+            corps["dimensionFilter"] = filtre
+        rapport = _rapport(client, bearer, corps)
+        lignes = rapport.get("rows", [])
+        return sum(int(ligne["metricValues"][0]["value"]) for ligne in lignes)
+
+    france = sessions(
+        {
+            "filter": {
+                "fieldName": "country",
+                "stringFilter": {"matchType": "EXACT", "value": "France"},
+            }
+        }
+    )
+    attendu = sum(
+        1
+        for d in _jours(date(2026, 6, 1), date(2026, 6, 7))
+        for s in build_day(SEED, d)
+        if s.country == "France"
+    )
+    assert france == attendu
+    assert 0 < france < sessions()
+
+
+def test_having_sur_metrique_non_demandee_est_valide(client, bearer):
+    """Même règle côté `metricFilter` : la métrique du having n'a pas à figurer
+    dans le rapport, et elle ne sort pas dans les lignes."""
+    rapport = _rapport(
+        client,
+        bearer,
+        {
+            "dateRanges": [{"startDate": "2026-06-01", "endDate": "2026-06-30"}],
+            "dimensions": [{"name": "date"}],
+            "metrics": [{"name": "sessions"}],
+            "metricFilter": {
+                "filter": {
+                    "fieldName": "totalUsers",
+                    "numericFilter": {
+                        "operation": "GREATER_THAN",
+                        "value": {"int64Value": "40"},
+                    },
+                }
+            },
+        },
+    )
+    assert [m["name"] for m in rapport["metricHeaders"]] == ["sessions"]
+    assert all(len(ligne["metricValues"]) == 1 for ligne in rapport["rows"])
+    jours_retenus = {ligne["dimensionValues"][0]["value"] for ligne in rapport["rows"]}
+    attendus = {
+        f"{d:%Y%m%d}"
+        for d in _jours(date(2026, 6, 1), date(2026, 6, 30))
+        if len({s.user_id for s in build_day(SEED, d)}) > 40
+    }
+    assert jours_retenus == attendus
+
+
+def test_filtre_sur_champ_inexistant_refuse(client, bearer):
     reponse = client.post(
         PROPRIETE,
         headers=bearer,
@@ -353,12 +453,52 @@ def test_filtre_sur_champ_non_demande_refuse(client, bearer):
             "dimensions": [{"name": "date"}],
             "metrics": [{"name": "sessions"}],
             "dimensionFilter": {
-                "filter": {
-                    "fieldName": "country",
-                    "stringFilter": {"matchType": "EXACT", "value": "France"},
-                }
+                "filter": {"fieldName": "pasUneDim", "stringFilter": {"value": "x"}}
             },
         },
     )
     assert reponse.status_code == 400
-    assert "must be a requested dimension" in reponse.json()["error"]["message"]
+    assert "is not a valid dimension." in reponse.json()["error"]["message"]
+
+
+def test_empty_filter_isole_les_valeurs_non_renseignees(client, bearer):
+    """`emptyFilter` existe dans le schéma v1beta ; le refuser mettrait un 400
+    en dev là où la prod répond 200. Le monde du mock produit bien du
+    `(not set)` (canal « Unassigned »), donc le prédicat a de la matière."""
+    plage = [{"startDate": "2026-06-01", "endDate": "2026-06-30"}]
+
+    def campagnes(filtre):
+        rapport = _rapport(
+            client,
+            bearer,
+            {
+                "dateRanges": plage,
+                "dimensions": [{"name": "sessionCampaignName"}],
+                "metrics": [{"name": "sessions"}],
+                "dimensionFilter": filtre,
+            },
+        )
+        return {ligne["dimensionValues"][0]["value"] for ligne in rapport.get("rows", [])}
+
+    feuille = {"filter": {"fieldName": "sessionCampaignName", "emptyFilter": {}}}
+    vides = campagnes(feuille)
+    renseignees = campagnes({"notExpression": feuille})
+    assert vides == {"(not set)"}
+    assert "(not set)" not in renseignees
+    # `(direct)` et `(organic)` sont des valeurs RÉELLES, pas des absences.
+    assert {"(direct)", "(organic)"} <= renseignees
+
+
+def test_predicat_de_feuille_inconnu_refuse(client, bearer):
+    reponse = client.post(
+        PROPRIETE,
+        headers=bearer,
+        json={
+            "dateRanges": [{"startDate": "2026-06-01", "endDate": "2026-06-02"}],
+            "dimensions": [{"name": "date"}],
+            "metrics": [{"name": "sessions"}],
+            "dimensionFilter": {"filter": {"fieldName": "date", "pasUnPredicat": {}}},
+        },
+    )
+    assert reponse.status_code == 400
+    assert "emptyFilter" in reponse.json()["error"]["message"]
