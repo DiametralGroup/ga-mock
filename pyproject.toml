@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Google Analytics 4 Data API (v1beta) mock — deterministic session-level analytics for the Boréal Conseil corporate site"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "Apache-2.0"
 # Le périmètre des dépendances est une décision, pas un accident : FastAPI et
 # uvicorn, rien d'autre. La crypto (RS256) est faite en stdlib — cf. rsa_min.py.
 dependencies = [
