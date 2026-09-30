@@ -1,22 +1,22 @@
-"""État mutable du serveur.
+"""Mutable server state.
 
-Un singleton de module : la même instance pour l'app FastAPI, pour `/__admin`
-et pour les tests in-process. `reset()` est le SEUL point de reconstruction —
-démarrage, admin et tests passent tous par lui, sinon deux chemins de remise à
-zéro finissent par diverger.
+A module-level singleton: the same instance for the FastAPI app, for
+`/__admin` and for in-process tests. `reset()` is the ONLY reconstruction
+point — startup, admin and tests all go through it, otherwise two reset
+paths would eventually diverge.
 """
 
 from __future__ import annotations
 
 from datetime import date, timedelta
 
-from .clock import horloge, virtual_now
+from .clock import clock, virtual_now
 from .dataset.sessions import Session, build_day
 from .errors import (
-    MESSAGE_429_HEURE,
-    MESSAGE_429_JOUR,
-    MESSAGE_429_PROJET_HEURE,
-    ErreurQuota,
+    MESSAGE_429_DAY,
+    MESSAGE_429_HOUR,
+    MESSAGE_429_PROJECT_HOUR,
+    QuotaError,
 )
 from .injection import engine
 from .settings import settings
@@ -25,79 +25,78 @@ from .settings import settings
 class MockState:
     def __init__(self) -> None:
         self.seed: int = settings.seed
-        self._jours: dict[date, tuple[Session, ...]] = {}
-        self.quota_jour_consomme: int = 0
-        self.quota_heure_consomme: int = 0
-        self.quota_projet_heure_consomme: int = 0
-        # UNE seule voie de construction : l'init passe par reset(), sinon le
-        # baseline d'injection de l'environnement ne serait appliqué qu'aux
-        # resets explicites et jamais au démarrage du conteneur.
+        self._days: dict[date, tuple[Session, ...]] = {}
+        self.quota_day_consumed: int = 0
+        self.quota_hour_consumed: int = 0
+        self.quota_project_hour_consumed: int = 0
+        # ONE single construction path: init goes through reset(), otherwise
+        # the environment's injection baseline would only apply to explicit
+        # resets and never to container startup.
         self.reset()
 
-    def consommer_quota(self, jetons: int) -> None:
-        """Décompte des jetons — l'épuisement NATUREL produit la même 429 que le
-        vrai service. Rare avec les plafonds par défaut ; l'injection
-        `quota_exhausted` force le cas sans attendre.
+    def consume_quota(self, tokens: int) -> None:
+        """Deducts tokens — NATURAL exhaustion produces the same 429 as the
+        real service. Rare with the default caps; the `quota_exhausted`
+        injection forces the case without waiting.
 
-        TROIS seaux, comme chez le vendeur : « An API request consumes a single
+        THREE buckets, like at the vendor: "An API request consumes a single
         number of tokens, and that number is deducted from all of the hourly,
-        daily, and per project hourly quotas. » Le seau projet/heure (35 % de
-        l'horaire) est donc celui qui s'épuise EN PREMIER aux plafonds par
-        défaut — un consommateur qui ne surveille que `tokensPerHour` sera
-        surpris ici plutôt qu'en prod.
+        daily, and per project hourly quotas." The project/hour bucket (35%
+        of the hourly one) is therefore the FIRST to run out at the default
+        caps — a consumer watching only `tokensPerHour` will be surprised
+        here rather than in prod.
         """
-        if self.quota_jour_consomme + jetons > settings.quota_tokens_per_day:
-            raise ErreurQuota(MESSAGE_429_JOUR)
-        if self.quota_heure_consomme + jetons > settings.quota_tokens_per_hour:
-            raise ErreurQuota(MESSAGE_429_HEURE)
-        if self.quota_projet_heure_consomme + jetons > settings.quota_tokens_per_project_per_hour:
-            raise ErreurQuota(MESSAGE_429_PROJET_HEURE)
-        self.quota_jour_consomme += jetons
-        self.quota_heure_consomme += jetons
-        self.quota_projet_heure_consomme += jetons
+        if self.quota_day_consumed + tokens > settings.quota_tokens_per_day:
+            raise QuotaError(MESSAGE_429_DAY)
+        if self.quota_hour_consumed + tokens > settings.quota_tokens_per_hour:
+            raise QuotaError(MESSAGE_429_HOUR)
+        if self.quota_project_hour_consumed + tokens > settings.quota_tokens_per_project_per_hour:
+            raise QuotaError(MESSAGE_429_PROJECT_HOUR)
+        self.quota_day_consumed += tokens
+        self.quota_hour_consumed += tokens
+        self.quota_project_hour_consumed += tokens
 
     def day(self, d: date) -> tuple[Session, ...]:
-        """Matérialisation paresseuse + cache.
+        """Lazy materialization + cache.
 
-        Un jour est une fonction pure de (seed, jour) : le cache n'est donc
-        invalidé QUE par `reset()` — jamais par le temps qui passe, seule la
-        VISIBILITÉ des sessions dépend de l'horloge.
+        A day is a pure function of (seed, day): the cache is therefore
+        invalidated ONLY by `reset()` — never by the passing of time, only
+        the VISIBILITY of sessions depends on the clock.
         """
-        if d not in self._jours:
-            self._jours[d] = build_day(self.seed, d)
-        return self._jours[d]
+        if d not in self._days:
+            self._days[d] = build_day(self.seed, d)
+        return self._days[d]
 
     def visible_sessions(self, d: date) -> tuple[Session, ...]:
-        """Le sous-ensemble « déjà traité » du jour.
+        """The "already processed" subset of the day.
 
-        Modèle de fraîcheur GA4 : une session n'existe pour l'API qu'une fois
-        sa latence de traitement (`lag_hours`) écoulée. Les jours récents
-        grossissent donc de façon monotone quand l'horloge avance — c'est le
-        levier qui permet aux consommateurs de tester leur ré-extraction des
-        N derniers jours.
+        GA4 freshness model: a session only exists for the API once its
+        processing latency (`lag_hours`) has elapsed. Recent days therefore
+        grow monotonically as the clock advances — that's the lever that lets
+        consumers test re-extracting the last N days.
         """
-        limite = virtual_now()
-        return tuple(s for s in self.day(d) if s.ts + timedelta(hours=s.lag_hours) <= limite)
+        limit = virtual_now()
+        return tuple(s for s in self.day(d) if s.ts + timedelta(hours=s.lag_hours) <= limit)
 
-    def jours_materialises(self) -> int:
-        return len(self._jours)
+    def days_materialized(self) -> int:
+        return len(self._days)
 
     def reset(self, seed: int | None = None) -> None:
-        """Relit l'environnement puis rebâtit l'état.
+        """Reloads the environment then rebuilds the state.
 
-        `seed` explicite (venu de /__admin/reset) prime sur l'environnement ;
-        sans lui on revient à la configuration de déploiement, pas à un état
-        magique mémorisé. L'horloge virtuelle fait partie de l'état : un reset
-        ramène aussi le temps à l'ancre.
+        An explicit `seed` (from /__admin/reset) takes priority over the
+        environment; without it we fall back to the deployment configuration,
+        not to some remembered magic state. The virtual clock is part of the
+        state: a reset also brings time back to the anchor.
         """
         settings.reload()
         self.seed = settings.seed if seed is None else seed
-        self._jours.clear()
-        self.quota_jour_consomme = 0
-        self.quota_heure_consomme = 0
-        self.quota_projet_heure_consomme = 0
-        horloge.offset_secondes = 0.0
-        engine.reinitialiser()
+        self._days.clear()
+        self.quota_day_consumed = 0
+        self.quota_hour_consumed = 0
+        self.quota_project_hour_consumed = 0
+        clock.offset_seconds = 0.0
+        engine.reset()
 
 
 state = MockState()

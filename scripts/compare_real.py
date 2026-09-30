@@ -1,33 +1,32 @@
-"""Rejeu du mock contre une VRAIE propriété GA4 — le purgatoire de UNVERIFIED.
+"""Replay the mock against a REAL GA4 property — the purgatory of UNVERIFIED.
 
-`docs/UNVERIFIED-FIELDS.md` nomme ce script dans ses `review_triggers` : c'est
-le seul instrument qui transforme « plausible » en « attesté ». Chaque cas est
-envoyé DEUX fois — au service réel (analyticsdata.googleapis.com) et au mock
-en processus (`TestClient`) — puis les deux réponses sont réduites au même
-SQUELETTE et comparées.
+`docs/UNVERIFIED-FIELDS.md` names this script in its `review_triggers`: it's
+the only instrument that turns "plausible" into "attested". Each case is sent
+TWICE — to the real service (analyticsdata.googleapis.com) and to the
+in-process mock (`TestClient`) — then both responses are reduced to the same
+SKELETON and compared.
 
-Ce qui est comparé, et ce qui ne l'est pas :
-  • comparé — le statut HTTP, la PRÉSENCE des clés (toute la règle proto3 :
-    répétés vides absents, int32 à zéro absents), le TYPE JSON des feuilles
-    (chaîne vs nombre : le piège n°1 de cette API), les valeurs énumérées
-    (`TYPE_INTEGER`, `RESERVED_TOTAL`, `kind`, `status`) et le wording des
-    erreurs ;
-  • PAS comparé — les données. La propriété réelle n'est pas le monde de
-    Boréal Conseil ; exiger les mêmes chiffres n'aurait aucun sens.
+What is compared, and what is not:
+  • compared — the HTTP status, the PRESENCE of keys (the whole proto3 rule:
+    empty repeated fields and zero int32s are absent), the JSON TYPE of leaf
+    values (string vs number: this API's #1 trap), enum values
+    (`TYPE_INTEGER`, `RESERVED_TOTAL`, `kind`, `status`) and the error
+    wording;
+  • NOT compared — the data. The real property isn't Boréal Conseil's world;
+    requiring the same numbers wouldn't make sense.
 
-Usage :
+Usage:
 
-    GA_REAL_SA=/chemin/sa.json GA_REAL_PROPERTY=<id de propriete> \\
-        uv run python scripts/compare_real.py [--cas id …] [--sortie rapport.json]
+    GA_REAL_SA=/path/to/sa.json GA_REAL_PROPERTY=<property id> \\
+        uv run python scripts/compare_real.py [--cases id …] [--output report.json]
 
-Le compte de service n'a besoin que de `analytics.readonly` sur la propriété,
-et l'API Data doit être ACTIVÉE sur le projet du compte (sinon 403
-SERVICE_DISABLED, et le script le dit franchement).
+The service account only needs `analytics.readonly` on the property, and the
+Data API must be ENABLED on the account's project (otherwise 403
+SERVICE_DISABLED, and the script says so plainly).
 
-La crypto reste en stdlib, comme le runtime : la clé privée réelle est lue par
-un décodeur DER minimal (PKCS#8 → RSAPrivateKey) puis signée par
-`ga_mock.rsa_min`. Aucune dépendance n'entre dans le projet pour un script de
-vérification.
+Crypto stays in stdlib, like the runtime: the real private key is read by a
+minimal DER decoder (PKCS#8 → RSAPrivateKey) then signed by `ga_mock.rsa_min`.
+No dependency enters the project for a verification script.
 """
 
 from __future__ import annotations
@@ -44,151 +43,152 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-RACINE = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(RACINE / "src"))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
 
 from ga_mock.rsa_min import b64url, sign  # noqa: E402
 
-HOTE_DATA = "https://analyticsdata.googleapis.com"
-HOTE_TOKEN = "https://oauth2.googleapis.com/token"
+DATA_HOST = "https://analyticsdata.googleapis.com"
+TOKEN_HOST = "https://oauth2.googleapis.com/token"
 SCOPE = "https://www.googleapis.com/auth/analytics.readonly"
 
-# Identifiant sur lequel le compte de service n'a AUCUN droit : sert le cas
-# « autre propriété ». Volontairement hors de toute plage plausible.
-PROPRIETE_ETRANGERE = "1"
+# Identifier the service account has NO rights on: serves the "other property"
+# case. Deliberately outside any plausible range.
+FOREIGN_PROPERTY = "1"
 
 
-# ── Lecture de la clé privée réelle (DER minimal, stdlib) ────────────────────
+# ── Reading the real private key (minimal DER, stdlib) ──────────────────────
 
 
-def _der_lire(donnees: bytes, position: int) -> tuple[int, bytes, int]:
-    """Retourne (tag, contenu, position suivante) d'UN élément DER.
+def _der_read(data: bytes, position: int) -> tuple[int, bytes, int]:
+    """Returns (tag, content, next position) for ONE DER element.
 
-    Suffisant pour PKCS#8 : on ne rencontre que SEQUENCE, INTEGER et
-    OCTET STRING, tous en encodage défini. Pas un parseur ASN.1 général.
+    Sufficient for PKCS#8: we only ever meet SEQUENCE, INTEGER and
+    OCTET STRING, all in definite-length encoding. Not a general ASN.1
+    parser.
     """
-    tag = donnees[position]
-    longueur = donnees[position + 1]
+    tag = data[position]
+    length = data[position + 1]
     position += 2
-    if longueur & 0x80:
-        octets = longueur & 0x7F
-        longueur = int.from_bytes(donnees[position : position + octets], "big")
+    if length & 0x80:
+        octets = length & 0x7F
+        length = int.from_bytes(data[position : position + octets], "big")
         position += octets
-    return tag, donnees[position : position + longueur], position + longueur
+    return tag, data[position : position + length], position + length
 
 
-def _der_entiers(sequence: bytes, combien: int) -> list[int]:
-    valeurs: list[int] = []
+def _der_integers(sequence: bytes, how_many: int) -> list[int]:
+    values: list[int] = []
     position = 0
-    while len(valeurs) < combien:
-        tag, contenu, position = _der_lire(sequence, position)
+    while len(values) < how_many:
+        tag, content, position = _der_read(sequence, position)
         if tag != 0x02:
-            raise ValueError(f"INTEGER attendu, tag 0x{tag:02x}")
-        valeurs.append(int.from_bytes(contenu, "big"))
-    return valeurs
+            raise ValueError(f"expected INTEGER, got tag 0x{tag:02x}")
+        values.append(int.from_bytes(content, "big"))
+    return values
 
 
-def cle_privee(pem: str) -> tuple[int, int, int]:
-    """PEM PKCS#8 non chiffré → (n, e, d).
+def private_key(pem: str) -> tuple[int, int, int]:
+    """Unencrypted PKCS#8 PEM → (n, e, d).
 
-    PrivateKeyInfo ::= SEQUENCE { version, algorithme, privateKey OCTET STRING }
-    où l'OCTET STRING contient RSAPrivateKey ::= SEQUENCE { version, n, e, d, … }.
+    PrivateKeyInfo ::= SEQUENCE { version, algorithm, privateKey OCTET STRING }
+    where the OCTET STRING holds RSAPrivateKey ::= SEQUENCE { version, n, e, d, … }.
     """
-    corps = "".join(ligne for ligne in pem.splitlines() if ligne and not ligne.startswith("-----"))
-    donnees = base64.b64decode(corps)
-    _, info, _ = _der_lire(donnees, 0)
+    body = "".join(line for line in pem.splitlines() if line and not line.startswith("-----"))
+    data = base64.b64decode(body)
+    _, info, _ = _der_read(data, 0)
     position = 0
-    _, _, position = _der_lire(info, position)  # version
-    _, _, position = _der_lire(info, position)  # AlgorithmIdentifier
-    tag, enveloppe, _ = _der_lire(info, position)
+    _, _, position = _der_read(info, position)  # version
+    _, _, position = _der_read(info, position)  # AlgorithmIdentifier
+    tag, envelope, _ = _der_read(info, position)
     if tag != 0x04:
-        raise ValueError("OCTET STRING attendu pour privateKey")
-    _, rsa, _ = _der_lire(enveloppe, 0)
-    _, n, e, d = _der_entiers(rsa, 4)
+        raise ValueError("expected OCTET STRING for privateKey")
+    _, rsa, _ = _der_read(envelope, 0)
+    _, n, e, d = _der_integers(rsa, 4)
     return n, e, d
 
 
-# ── Côté service réel ────────────────────────────────────────────────────────
+# ── Real service side ────────────────────────────────────────────────────────
 
 
-class Reel:
-    """Client HTTP du service réel : signe une assertion, échange un bearer,
-    appelle. Rien de plus — pas de retry, pas de cache : un rejeu doit être un
-    rejeu, pas une simulation de client résilient."""
+class Real:
+    """HTTP client for the real service: signs an assertion, exchanges a
+    bearer, calls. Nothing more — no retry, no cache: a replay must be a
+    replay, not a simulation of a resilient client."""
 
-    def __init__(self, chemin_sa: Path) -> None:
-        self.sa = json.loads(chemin_sa.read_text())
-        self.n, self.e, self.d = cle_privee(self.sa["private_key"])
-        self._jeton = ""
-        self._echeance = 0.0
+    def __init__(self, sa_path: Path) -> None:
+        self.sa = json.loads(sa_path.read_text())
+        self.n, self.e, self.d = private_key(self.sa["private_key"])
+        self._token = ""
+        self._expiry = 0.0
 
     def _assertion(self) -> str:
-        maintenant = int(time.time())
-        entete = b64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
-        charge = b64url(
+        now = int(time.time())
+        header = b64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+        payload = b64url(
             json.dumps(
                 {
                     "iss": self.sa["client_email"],
                     "scope": SCOPE,
-                    "aud": self.sa.get("token_uri", HOTE_TOKEN),
-                    "iat": maintenant,
-                    "exp": maintenant + 3600,
+                    "aud": self.sa.get("token_uri", TOKEN_HOST),
+                    "iat": now,
+                    "exp": now + 3600,
                 }
             ).encode()
         )
-        signature = b64url(sign(f"{entete}.{charge}".encode(), self.n, self.d))
-        return f"{entete}.{charge}.{signature}"
+        signature = b64url(sign(f"{header}.{payload}".encode(), self.n, self.d))
+        return f"{header}.{payload}.{signature}"
 
     def bearer(self) -> str:
-        if self._jeton and time.time() < self._echeance:
-            return self._jeton
-        donnees = urllib.parse.urlencode(
+        if self._token and time.time() < self._expiry:
+            return self._token
+        data = urllib.parse.urlencode(
             {
                 "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
                 "assertion": self._assertion(),
             }
         ).encode()
-        statut, _, texte = _http(
-            self.sa.get("token_uri", HOTE_TOKEN),
+        status, _, text = _http(
+            self.sa.get("token_uri", TOKEN_HOST),
             "POST",
-            donnees,
+            data,
             {"Content-Type": "application/x-www-form-urlencoded"},
         )
-        if statut != 200:
-            raise SystemExit(f"échange de jeton refusé ({statut}) : {texte}")
-        charge = json.loads(texte)
-        self._jeton = str(charge["access_token"])
-        self._echeance = time.time() + int(charge.get("expires_in", 3600)) - 120
-        return self._jeton
+        if status != 200:
+            raise SystemExit(f"token exchange refused ({status}): {text}")
+        payload = json.loads(text)
+        self._token = str(payload["access_token"])
+        self._expiry = time.time() + int(payload.get("expires_in", 3600)) - 120
+        return self._token
 
-    def appeler(self, cas: Cas, propriete: str) -> Reponse:
-        entetes = {"Content-Type": "application/json"}
-        if cas.auth == "valide":
-            entetes["Authorization"] = f"Bearer {self.bearer()}"
-        elif cas.auth == "invalide":
-            entetes["Authorization"] = "Bearer ya29.completement.faux"
-        corps = cas.charge_utile()
-        statut, entetes_reponse, texte = _http(
-            HOTE_DATA + cas.chemin.replace("{p}", propriete), cas.methode, corps, entetes
+    def call(self, case: Case, property_id: str) -> Response:
+        headers = {"Content-Type": "application/json"}
+        if case.auth == "valid":
+            headers["Authorization"] = f"Bearer {self.bearer()}"
+        elif case.auth == "invalid":
+            headers["Authorization"] = "Bearer ya29.completely.fake"
+        body = case.payload()
+        status, response_headers, text = _http(
+            DATA_HOST + case.path.replace("{p}", property_id), case.method, body, headers
         )
-        return Reponse.depuis(statut, entetes_reponse, texte)
+        return Response.from_raw(status, response_headers, text)
 
 
 def _http(
-    url: str, methode: str, corps: bytes | None, entetes: dict[str, str]
+    url: str, method: str, body: bytes | None, headers: dict[str, str]
 ) -> tuple[int, dict[str, str], str]:
-    requete = urllib.request.Request(url, data=corps, method=methode, headers=entetes)
+    request = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(requete) as reponse:
-            return reponse.status, dict(reponse.headers), reponse.read().decode()
+        with urllib.request.urlopen(request) as response:
+            return response.status, dict(response.headers), response.read().decode()
     except urllib.error.HTTPError as exc:
         return exc.code, dict(exc.headers), exc.read().decode()
 
 
-# ── Côté mock ────────────────────────────────────────────────────────────────
+# ── Mock side ─────────────────────────────────────────────────────────────────
 
 
-def client_mock() -> Any:
+def mock_client() -> Any:
     from fastapi.testclient import TestClient
 
     import ga_mock
@@ -197,169 +197,168 @@ def client_mock() -> Any:
     return TestClient(ga_mock.app), ga_mock
 
 
-def appeler_mock(client: Any, module: Any, cas: Cas) -> Reponse:
-    entetes = {"Content-Type": "application/json"}
-    if cas.auth == "valide":
-        jeton = client.post(
+def call_mock(client: Any, module: Any, case: Case) -> Response:
+    headers = {"Content-Type": "application/json"}
+    if case.auth == "valid":
+        token = client.post(
             "/token",
             data={
                 "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
                 "assertion": module.build_assertion(),
             },
         ).json()["access_token"]
-        entetes["Authorization"] = f"Bearer {jeton}"
-    elif cas.auth == "invalide":
-        entetes["Authorization"] = "Bearer ya29.completement.faux"
-    chemin = cas.chemin.replace("{p}", module.settings.property_id)
-    reponse = client.request(cas.methode, chemin, headers=entetes, content=cas.charge_utile())
-    return Reponse.depuis(reponse.status_code, dict(reponse.headers), reponse.text)
+        headers["Authorization"] = f"Bearer {token}"
+    elif case.auth == "invalid":
+        headers["Authorization"] = "Bearer ya29.completely.fake"
+    path = case.path.replace("{p}", module.settings.property_id)
+    response = client.request(case.method, path, headers=headers, content=case.payload())
+    return Response.from_raw(response.status_code, dict(response.headers), response.text)
 
 
-# ── Squelette : la forme, débarrassée des données ────────────────────────────
+# ── Skeleton: shape, stripped of data ────────────────────────────────────────
 
 
-# Une chaîne est conservée TELLE QUELLE si elle ressemble à une énumération ou
-# à un marqueur de protocole ; sinon elle devient "str". C'est ce qui permet de
-# comparer `TYPE_INTEGER`, `RESERVED_TOTAL` ou `analyticsData#runReport` sans
-# comparer un nom de ville.
-def _chaine(valeur: str) -> str:
-    if valeur.startswith("analyticsData#"):
-        return valeur
-    enum = valeur.replace("_", "")
-    if enum.isalnum() and any(c.isalpha() for c in enum) and valeur.upper() == valeur:
-        return valeur
+# A string is kept AS IS if it looks like an enum or a protocol marker;
+# otherwise it becomes "str". That's what lets us compare `TYPE_INTEGER`,
+# `RESERVED_TOTAL` or `analyticsData#runReport` without comparing a city name.
+def _string(value: str) -> str:
+    if value.startswith("analyticsData#"):
+        return value
+    enum = value.replace("_", "")
+    if enum.isalnum() and any(c.isalpha() for c in enum) and value.upper() == value:
+        return value
     return "str"
 
 
-def _liste(valeurs: list[Any]) -> list[Any]:
-    """Réduction d'une liste à l'UNION de ses formes : le nombre de lignes
-    diffère forcément entre deux mondes, la forme non."""
-    formes: list[Any] = []
-    for element in valeurs:
-        forme = squelette(element)
-        if forme not in formes:
-            formes.append(forme)
-    return formes
+def _list(values: list[Any]) -> list[Any]:
+    """Reduces a list to the UNION of its shapes: the row count is bound to
+    differ between two worlds, the shape isn't."""
+    shapes: list[Any] = []
+    for element in values:
+        shape = skeleton(element)
+        if shape not in shapes:
+            shapes.append(shape)
+    return shapes
 
 
-_SCALAIRES: tuple[tuple[type, str], ...] = ((bool, "bool"), (int, "int"), (float, "float"))
+_SCALARS: tuple[tuple[type, str], ...] = ((bool, "bool"), (int, "int"), (float, "float"))
 
 
-def squelette(valeur: Any) -> Any:
-    if isinstance(valeur, dict):
-        return {cle: squelette(valeur[cle]) for cle in sorted(valeur)}
-    if isinstance(valeur, list):
-        return _liste(valeur)
-    if isinstance(valeur, str):
-        return _chaine(valeur)
-    for type_python, nom in _SCALAIRES:
-        if isinstance(valeur, type_python):
-            return nom
+def skeleton(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: skeleton(value[key]) for key in sorted(value)}
+    if isinstance(value, list):
+        return _list(value)
+    if isinstance(value, str):
+        return _string(value)
+    for python_type, name in _SCALARS:
+        if isinstance(value, python_type):
+            return name
     return "null"
 
 
-class Reponse:
-    __slots__ = ("corps", "entetes", "statut", "texte")
+class Response:
+    __slots__ = ("body", "headers", "status", "text")
 
-    def __init__(self, statut: int, entetes: dict[str, str], corps: Any, texte: str) -> None:
-        self.statut = statut
-        self.entetes = entetes
-        self.corps = corps
-        self.texte = texte
+    def __init__(self, status: int, headers: dict[str, str], body: Any, text: str) -> None:
+        self.status = status
+        self.headers = headers
+        self.body = body
+        self.text = text
 
     @classmethod
-    def depuis(cls, statut: int, entetes: dict[str, str], texte: str) -> Reponse:
+    def from_raw(cls, status: int, headers: dict[str, str], text: str) -> Response:
         try:
-            corps = json.loads(texte)
+            body = json.loads(text)
         except ValueError:
-            corps = texte
-        return cls(statut, {k.lower(): v for k, v in entetes.items()}, corps, texte)
+            body = text
+        return cls(status, {k.lower(): v for k, v in headers.items()}, body, text)
 
     @property
-    def message_erreur(self) -> str:
-        if isinstance(self.corps, dict) and isinstance(self.corps.get("error"), dict):
-            return str(self.corps["error"].get("message", ""))
+    def error_message(self) -> str:
+        if isinstance(self.body, dict) and isinstance(self.body.get("error"), dict):
+            return str(self.body["error"].get("message", ""))
         return ""
 
     @property
-    def statut_erreur(self) -> str:
-        if isinstance(self.corps, dict) and isinstance(self.corps.get("error"), dict):
-            return str(self.corps["error"].get("status", ""))
+    def error_status(self) -> str:
+        if isinstance(self.body, dict) and isinstance(self.body.get("error"), dict):
+            return str(self.body["error"].get("status", ""))
         return ""
 
 
-# ── Les cas ──────────────────────────────────────────────────────────────────
+# ── Cases ─────────────────────────────────────────────────────────────────────
 
 
-class Cas:
-    """Un cas de rejeu. `chemin` porte `{p}`, remplacé par la propriété de
-    chaque côté — le mock ne connaît pas l'identifiant réel et réciproquement."""
+class Case:
+    """One replay case. `path` carries `{p}`, replaced by each side's own
+    property — the mock doesn't know the real id and vice versa."""
 
     def __init__(
         self,
-        identifiant: str,
-        chemin: str,
-        corps: Any = None,
+        id: str,
+        path: str,
+        body: Any = None,
         *,
-        methode: str = "POST",
-        auth: str = "valide",
-        brut: str | None = None,
+        method: str = "POST",
+        auth: str = "valid",
+        raw: str | None = None,
         note: str = "",
-        sous_ensemble: bool = False,
+        subset: bool = False,
     ) -> None:
-        self.identifiant = identifiant
-        self.chemin = chemin
-        self.corps = corps
-        self.methode = methode
+        self.id = id
+        self.path = path
+        self.body = body
+        self.method = method
         self.auth = auth
-        self.brut = brut
+        self.raw = raw
         self.note = note
-        # Le mock sert un catalogue PLUS PETIT que la vraie propriété : sur
-        # `metadata`, une forme présente côté réel et absente côté mock est un
-        # périmètre assumé, pas une divergence. L'inverse — une forme que le
-        # mock invente — reste un écart.
-        self.sous_ensemble = sous_ensemble
+        # The mock serves a SMALLER catalog than the real property: on
+        # `metadata`, a shape present on the real side and absent from the
+        # mock is an assumed scope reduction, not a divergence. The reverse —
+        # a shape the mock invents — remains a gap.
+        self.subset = subset
 
-    def charge_utile(self) -> bytes | None:
-        if self.brut is not None:
-            return self.brut.encode()
-        if self.corps is None:
+    def payload(self) -> bytes | None:
+        if self.raw is not None:
+            return self.raw.encode()
+        if self.body is None:
             return None
-        return json.dumps(self.corps).encode()
+        return json.dumps(self.body).encode()
 
 
-RAPPORT = "/v1beta/properties/{p}:runReport"
-LOT = "/v1beta/properties/{p}:batchRunReports"
+REPORT = "/v1beta/properties/{p}:runReport"
+BATCH = "/v1beta/properties/{p}:batchRunReports"
 META = "/v1beta/properties/{p}/metadata"
 
-# Fenêtre RELATIVE partout : le monde du mock est ancré en juillet 2026, la
-# propriété réelle vit à l'heure réelle — seules les dates relatives donnent
-# des lignes des DEUX côtés.
-PLAGE = [{"startDate": "30daysAgo", "endDate": "yesterday"}]
-VIDE = [{"startDate": "2015-01-01", "endDate": "2015-01-07"}]
+# RELATIVE window everywhere: the mock's world is anchored in July 2026, the
+# real property lives at real time — only relative dates yield rows on BOTH
+# sides.
+RANGE = [{"startDate": "30daysAgo", "endDate": "yesterday"}]
+EMPTY = [{"startDate": "2015-01-01", "endDate": "2015-01-07"}]
 
 
-def _base(**surcharges: Any) -> dict[str, Any]:
-    corps: dict[str, Any] = {"dateRanges": list(PLAGE), "metrics": [{"name": "sessions"}]}
-    corps.update(surcharges)
-    return corps
+def _base(**overrides: Any) -> dict[str, Any]:
+    body: dict[str, Any] = {"dateRanges": list(RANGE), "metrics": [{"name": "sessions"}]}
+    body.update(overrides)
+    return body
 
 
-CAS: list[Cas] = [
-    # ── Formes nominales ────────────────────────────────────────────────────
-    Cas("nu", RAPPORT, _base(), note="1 métrique, 0 dimension : ligne sans dimensionValues"),
-    Cas(
+CASES: list[Case] = [
+    # ── Nominal shapes ───────────────────────────────────────────────────────
+    Case("bare", REPORT, _base(), note="1 metric, 0 dimensions: row without dimensionValues"),
+    Case(
         "dimension_date",
-        RAPPORT,
+        REPORT,
         _base(
             dimensions=[{"name": "date"}],
             metrics=[{"name": "sessions"}, {"name": "totalUsers"}],
         ),
     ),
-    Cas("vide", RAPPORT, _base(dateRanges=list(VIDE)), note="omission de rows/rowCount"),
-    Cas(
-        "metriques_flottantes",
-        RAPPORT,
+    Case("empty", REPORT, _base(dateRanges=list(EMPTY)), note="omission of rows/rowCount"),
+    Case(
+        "float_metrics",
+        REPORT,
         _base(
             dimensions=[{"name": "date"}],
             metrics=[
@@ -369,11 +368,11 @@ CAS: list[Cas] = [
                 {"name": "screenPageViewsPerSession"},
             ],
         ),
-        note="sérialisation des flottants et types d'en-tête",
+        note="float serialization and header types",
     ),
-    Cas(
-        "types_metriques",
-        RAPPORT,
+    Case(
+        "metric_types",
+        REPORT,
         _base(
             metrics=[
                 {"name": "sessions"},
@@ -382,17 +381,17 @@ CAS: list[Cas] = [
                 {"name": "sessionKeyEventRate"},
             ]
         ),
-        note="TYPE_INTEGER / TYPE_FLOAT / TYPE_SECONDS attendus",
+        note="expected TYPE_INTEGER / TYPE_FLOAT / TYPE_SECONDS",
     ),
-    Cas("limit_nombre", RAPPORT, _base(dimensions=[{"name": "date"}], limit=3)),
-    Cas("limit_chaine", RAPPORT, _base(dimensions=[{"name": "date"}], limit="3")),
-    Cas("limit_zero", RAPPORT, _base(dimensions=[{"name": "date"}], limit=0)),
-    Cas("limit_enorme", RAPPORT, _base(dimensions=[{"name": "date"}], limit=300000)),
-    Cas("limit_negative", RAPPORT, _base(dimensions=[{"name": "date"}], limit=-1)),
-    Cas("offset", RAPPORT, _base(dimensions=[{"name": "date"}], limit=2, offset="3")),
-    Cas(
-        "deux_plages",
-        RAPPORT,
+    Case("limit_number", REPORT, _base(dimensions=[{"name": "date"}], limit=3)),
+    Case("limit_string", REPORT, _base(dimensions=[{"name": "date"}], limit="3")),
+    Case("limit_zero", REPORT, _base(dimensions=[{"name": "date"}], limit=0)),
+    Case("limit_huge", REPORT, _base(dimensions=[{"name": "date"}], limit=300000)),
+    Case("limit_negative", REPORT, _base(dimensions=[{"name": "date"}], limit=-1)),
+    Case("offset", REPORT, _base(dimensions=[{"name": "date"}], limit=2, offset="3")),
+    Case(
+        "two_ranges",
+        REPORT,
         _base(
             dateRanges=[
                 {"startDate": "14daysAgo", "endDate": "8daysAgo"},
@@ -400,64 +399,64 @@ CAS: list[Cas] = [
             ],
             dimensions=[{"name": "date"}],
         ),
-        note="dimension implicite dateRange : présence ET position",
+        note="implicit dateRange dimension: presence AND position",
     ),
-    Cas(
-        "plages_nommees",
-        RAPPORT,
+    Case(
+        "named_ranges",
+        REPORT,
         _base(
             dateRanges=[
-                {"startDate": "14daysAgo", "endDate": "8daysAgo", "name": "avant"},
-                {"startDate": "7daysAgo", "endDate": "yesterday", "name": "apres"},
+                {"startDate": "14daysAgo", "endDate": "8daysAgo", "name": "before"},
+                {"startDate": "7daysAgo", "endDate": "yesterday", "name": "after"},
             ],
             dimensions=[{"name": "date"}],
         ),
     ),
-    Cas(
-        "agregations",
-        RAPPORT,
+    Case(
+        "aggregations",
+        REPORT,
         _base(
             dimensions=[{"name": "date"}],
             metricAggregations=["TOTAL", "MAXIMUM", "MINIMUM"],
         ),
-        note="marqueurs RESERVED_* et forme des lignes d'agrégation",
+        note="RESERVED_* markers and aggregation row shape",
     ),
-    Cas(
-        "agregation_count",
-        RAPPORT,
+    Case(
+        "aggregation_count",
+        REPORT,
         _base(dimensions=[{"name": "date"}], metricAggregations=["COUNT"]),
-        note="COUNT est dans l'enum du discovery — le mock le refuse",
+        note="COUNT is in the discovery enum — the mock rejects it",
     ),
-    Cas(
+    Case(
         "quota",
-        RAPPORT,
+        REPORT,
         _base(returnPropertyQuota=True),
-        note="liste EXACTE des seaux de PropertyQuota",
+        note="EXACT list of PropertyQuota buckets",
     ),
-    Cas(
-        "lignes_vides",
-        RAPPORT,
-        _base(dimensions=[{"name": "date"}], dateRanges=list(VIDE), keepEmptyRows=True),
+    Case(
+        "empty_rows",
+        REPORT,
+        _base(dimensions=[{"name": "date"}], dateRanges=list(EMPTY), keepEmptyRows=True),
     ),
-    Cas(
-        "tri_metrique",
-        RAPPORT,
+    Case(
+        "sort_metric",
+        REPORT,
         _base(
             dimensions=[{"name": "date"}],
             orderBys=[{"metric": {"metricName": "sessions"}, "desc": True}],
         ),
     ),
-    Cas(
-        "tri_dimension",
-        RAPPORT,
+    Case(
+        "sort_dimension",
+        REPORT,
         _base(
             dimensions=[{"name": "date"}],
             orderBys=[{"dimension": {"dimensionName": "date", "orderType": "ALPHANUMERIC"}}],
         ),
     ),
-    Cas(
-        "filtre_chaine",
-        RAPPORT,
+    Case(
+        "string_filter",
+        REPORT,
         _base(
             dimensions=[{"name": "deviceCategory"}],
             dimensionFilter={
@@ -468,9 +467,9 @@ CAS: list[Cas] = [
             },
         ),
     ),
-    Cas(
-        "filtre_regexp",
-        RAPPORT,
+    Case(
+        "regexp_filter",
+        REPORT,
         _base(
             dimensions=[{"name": "pagePath"}],
             dimensionFilter={
@@ -481,20 +480,20 @@ CAS: list[Cas] = [
             },
         ),
     ),
-    Cas(
-        "filtre_vide",
-        RAPPORT,
+    Case(
+        "empty_filter",
+        REPORT,
         _base(
             dimensions=[{"name": "sessionCampaignName"}],
             dimensionFilter={
                 "notExpression": {"filter": {"fieldName": "sessionCampaignName", "emptyFilter": {}}}
             },
         ),
-        note="emptyFilter existe dans le discovery — absent du mock",
+        note="emptyFilter exists in the discovery doc — absent from the mock",
     ),
-    Cas(
-        "filtre_metrique",
-        RAPPORT,
+    Case(
+        "metric_filter",
+        REPORT,
         _base(
             dimensions=[{"name": "date"}],
             metricFilter={
@@ -508,9 +507,9 @@ CAS: list[Cas] = [
             },
         ),
     ),
-    Cas(
-        "filtre_champ_non_demande",
-        RAPPORT,
+    Case(
+        "filter_on_unrequested_field",
+        REPORT,
         _base(
             dimensions=[{"name": "date"}],
             dimensionFilter={
@@ -520,49 +519,49 @@ CAS: list[Cas] = [
                 }
             },
         ),
-        note="filtrer sur une dimension non demandée : le mock refuse en 400",
+        note="filtering on a non-requested dimension: the mock rejects with 400",
     ),
-    Cas(
-        "dates_relatives",
-        RAPPORT,
+    Case(
+        "relative_dates",
+        REPORT,
         _base(
             dateRanges=[{"startDate": "today", "endDate": "today"}],
             dimensions=[{"name": "date"}],
         ),
     ),
-    Cas(
+    Case(
         "metadata",
         META,
         None,
-        methode="GET",
-        sous_ensemble=True,
-        note="le mock sert 20 dimensions et 15 métriques, pas tout le catalogue",
+        method="GET",
+        subset=True,
+        note="the mock serves 20 dimensions and 15 metrics, not the whole catalog",
     ),
-    Cas(
+    Case(
         "metadata_zero",
         "/v1beta/properties/0/metadata",
         None,
-        methode="GET",
-        sous_ensemble=True,
-        note="idem — properties/0 décrit le schéma commun",
+        method="GET",
+        subset=True,
+        note="same — properties/0 describes the common schema",
     ),
-    Cas(
-        "lot",
-        LOT,
+    Case(
+        "batch",
+        BATCH,
         {"requests": [_base(), _base(dimensions=[{"name": "date"}], limit=2)]},
     ),
-    Cas("lot_six", LOT, {"requests": [_base()] * 6}, note="borne des 5 sous-rapports"),
-    Cas("lot_vide", LOT, {"requests": []}),
-    # ── Champs de requête hors périmètre du mock ────────────────────────────
-    Cas(
-        "devise",
-        RAPPORT,
+    Case("batch_six", BATCH, {"requests": [_base()] * 6}, note="the 5 sub-report cap"),
+    Case("batch_empty", BATCH, {"requests": []}),
+    # ── Request fields outside the mock's scope ─────────────────────────────
+    Case(
+        "currency",
+        REPORT,
         _base(currencyCode="USD"),
-        note="champ réel du RunReportRequest, ignoré par le mock",
+        note="real RunReportRequest field, ignored by the mock",
     ),
-    Cas(
-        "cohorte",
-        RAPPORT,
+    Case(
+        "cohort",
+        REPORT,
         {
             "cohortSpec": {
                 "cohorts": [
@@ -577,36 +576,36 @@ CAS: list[Cas] = [
             "dimensions": [{"name": "cohort"}, {"name": "cohortNthDay"}],
             "metrics": [{"name": "cohortActiveUsers"}],
         },
-        note="le mock refuse cohortSpec en 400 : divergence de PÉRIMÈTRE assumée",
+        note="the mock rejects cohortSpec with 400: assumed SCOPE divergence",
     ),
-    # ── Erreurs ─────────────────────────────────────────────────────────────
-    Cas("sans_bearer", RAPPORT, _base(), auth="aucune", note="401 + WWW-Authenticate"),
-    Cas("bearer_invalide", RAPPORT, _base(), auth="invalide"),
-    Cas(
-        "autre_propriete",
-        f"/v1beta/properties/{PROPRIETE_ETRANGERE}:runReport",
+    # ── Errors ───────────────────────────────────────────────────────────────
+    Case("no_bearer", REPORT, _base(), auth="none", note="401 + WWW-Authenticate"),
+    Case("invalid_bearer", REPORT, _base(), auth="invalid"),
+    Case(
+        "other_property",
+        f"/v1beta/properties/{FOREIGN_PROPERTY}:runReport",
         _base(),
         note="403 PERMISSION_DENIED",
     ),
-    Cas("propriete_non_numerique", "/v1beta/properties/abc:runReport", _base()),
-    Cas("dimension_inconnue", RAPPORT, _base(dimensions=[{"name": "pasUneDimension"}])),
-    Cas("metrique_inconnue", RAPPORT, _base(metrics=[{"name": "pasUneMetrique"}])),
-    Cas("sans_metrique", RAPPORT, {"dateRanges": list(PLAGE)}),
-    Cas("sans_plage", RAPPORT, {"metrics": [{"name": "sessions"}]}),
-    Cas(
-        "plage_inversee",
-        RAPPORT,
+    Case("non_numeric_property", "/v1beta/properties/abc:runReport", _base()),
+    Case("unknown_dimension", REPORT, _base(dimensions=[{"name": "notADimension"}])),
+    Case("unknown_metric", REPORT, _base(metrics=[{"name": "notAMetric"}])),
+    Case("no_metric", REPORT, {"dateRanges": list(RANGE)}),
+    Case("no_range", REPORT, {"metrics": [{"name": "sessions"}]}),
+    Case(
+        "reversed_range",
+        REPORT,
         _base(dateRanges=[{"startDate": "yesterday", "endDate": "30daysAgo"}]),
     ),
-    Cas(
-        "date_invalide",
-        RAPPORT,
+    Case(
+        "invalid_date",
+        REPORT,
         _base(dateRanges=[{"startDate": "01/01/2026", "endDate": "today"}]),
     ),
-    Cas("cinq_plages", RAPPORT, _base(dateRanges=list(PLAGE) * 5)),
-    Cas(
-        "dix_dimensions",
-        RAPPORT,
+    Case("five_ranges", REPORT, _base(dateRanges=list(RANGE) * 5)),
+    Case(
+        "ten_dimensions",
+        REPORT,
         _base(
             dimensions=[
                 {"name": n}
@@ -625,9 +624,9 @@ CAS: list[Cas] = [
             ]
         ),
     ),
-    Cas(
-        "onze_metriques",
-        RAPPORT,
+    Case(
+        "eleven_metrics",
+        REPORT,
         _base(
             metrics=[
                 {"name": n}
@@ -647,113 +646,113 @@ CAS: list[Cas] = [
             ]
         ),
     ),
-    Cas("doublon_dimension", RAPPORT, _base(dimensions=[{"name": "date"}, {"name": "date"}])),
-    Cas("champ_inconnu", RAPPORT, _base(pasUnChamp=1), note="clé JSON inconnue"),
-    Cas("json_invalide", RAPPORT, None, brut="{ceci n'est pas du json"),
-    Cas("corps_absent", RAPPORT, None, brut=""),
-    Cas("route_inconnue", "/v1beta/properties/{p}:runNothing", _base()),
-    Cas("mauvais_verbe", RAPPORT, None, methode="GET"),
-    Cas(
-        "tri_non_demande",
-        RAPPORT,
+    Case("duplicate_dimension", REPORT, _base(dimensions=[{"name": "date"}, {"name": "date"}])),
+    Case("unknown_field", REPORT, _base(notAField=1), note="unknown JSON key"),
+    Case("invalid_json", REPORT, None, raw="{this is not json"),
+    Case("no_body", REPORT, None, raw=""),
+    Case("unknown_route", "/v1beta/properties/{p}:runNothing", _base()),
+    Case("wrong_verb", REPORT, None, method="GET"),
+    Case(
+        "unrequested_sort",
+        REPORT,
         _base(
             dimensions=[{"name": "date"}],
             orderBys=[{"metric": {"metricName": "totalUsers"}}],
         ),
     ),
-    Cas(
-        "agregation_invalide",
-        RAPPORT,
-        _base(metricAggregations=["MOYENNE"]),
+    Case(
+        "invalid_aggregation",
+        REPORT,
+        _base(metricAggregations=["AVERAGE"]),
     ),
 ]
 
 
-# ── Comparaison ──────────────────────────────────────────────────────────────
+# ── Comparison ────────────────────────────────────────────────────────────────
 
 
-def _differences_dict(attendu: dict, obtenu: dict, chemin: str) -> list[str]:
-    ecarts: list[str] = []
-    for cle in sorted(set(attendu) | set(obtenu)):
-        sous = f"{chemin}.{cle}" if chemin else cle
-        if cle not in obtenu:
-            ecarts.append(f"{sous} : absent du mock (réel = {json.dumps(attendu[cle])})")
-        elif cle not in attendu:
-            ecarts.append(f"{sous} : en trop dans le mock ({json.dumps(obtenu[cle])})")
+def _diff_dict(expected: dict, actual: dict, path: str) -> list[str]:
+    gaps: list[str] = []
+    for key in sorted(set(expected) | set(actual)):
+        sub = f"{path}.{key}" if path else key
+        if key not in actual:
+            gaps.append(f"{sub}: absent from mock (real = {json.dumps(expected[key])})")
+        elif key not in expected:
+            gaps.append(f"{sub}: extra in mock ({json.dumps(actual[key])})")
         else:
-            ecarts.extend(_differences(attendu[cle], obtenu[cle], sous))
-    return ecarts
+            gaps.extend(_diff(expected[key], actual[key], sub))
+    return gaps
 
 
-def _differences_liste(attendu: list, obtenu: list, chemin: str) -> list[str]:
-    if not attendu and obtenu:
-        return [f"{chemin} : réel vide, mock non vide"]
-    if attendu and not obtenu:
-        return [f"{chemin} : réel non vide, mock vide"]
-    manquantes = [f for f in attendu if f not in obtenu]
-    surnumeraires = [f for f in obtenu if f not in attendu]
-    return [f"{chemin}[] : forme absente du mock — {json.dumps(f)}" for f in manquantes] + [
-        f"{chemin}[] : forme en trop dans le mock — {json.dumps(f)}" for f in surnumeraires
+def _diff_list(expected: list, actual: list, path: str) -> list[str]:
+    if not expected and actual:
+        return [f"{path}: real empty, mock non-empty"]
+    if expected and not actual:
+        return [f"{path}: real non-empty, mock empty"]
+    missing = [f for f in expected if f not in actual]
+    extra = [f for f in actual if f not in expected]
+    return [f"{path}[]: shape absent from mock — {json.dumps(f)}" for f in missing] + [
+        f"{path}[]: extra shape in mock — {json.dumps(f)}" for f in extra
     ]
 
 
-def _differences(attendu: Any, obtenu: Any, chemin: str = "") -> list[str]:
-    """Diff RÉCURSIF de deux squelettes. `attendu` = le réel, `obtenu` = le
-    mock : le vocabulaire dit qui fait autorité."""
-    if isinstance(attendu, dict) and isinstance(obtenu, dict):
-        return _differences_dict(attendu, obtenu, chemin)
-    if isinstance(attendu, list) and isinstance(obtenu, list):
-        return _differences_liste(attendu, obtenu, chemin)
-    if attendu != obtenu:
-        return [f"{chemin} : réel={json.dumps(attendu)} mock={json.dumps(obtenu)}"]
+def _diff(expected: Any, actual: Any, path: str = "") -> list[str]:
+    """RECURSIVE diff of two skeletons. `expected` = the real side, `actual` =
+    the mock: the naming says who's authoritative."""
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        return _diff_dict(expected, actual, path)
+    if isinstance(expected, list) and isinstance(actual, list):
+        return _diff_list(expected, actual, path)
+    if expected != actual:
+        return [f"{path}: real={json.dumps(expected)} mock={json.dumps(actual)}"]
     return []
 
 
-MANQUE_COTE_MOCK = " : absent du mock"
-FORME_MANQUANTE = "[] : forme absente du mock"
+MISSING_FROM_MOCK = ": absent from mock"
+MISSING_SHAPE = "[]: shape absent from mock"
 
 
-def comparer(cas: Cas, reel: Reponse, mock: Reponse) -> dict[str, Any]:
-    ecarts: list[str] = []
-    if reel.statut != mock.statut:
-        ecarts.append(f"statut HTTP : réel={reel.statut} mock={mock.statut}")
-    if reel.statut_erreur != mock.statut_erreur:
-        ecarts.append(f"error.status : réel={reel.statut_erreur!r} mock={mock.statut_erreur!r}")
-    bruts = _differences(squelette(reel.corps), squelette(mock.corps))
-    perimetre: list[str] = []
-    for ecart in bruts:
-        if cas.sous_ensemble and (MANQUE_COTE_MOCK in ecart or FORME_MANQUANTE in ecart):
-            perimetre.append(ecart)
+def compare(case: Case, real: Response, mock: Response) -> dict[str, Any]:
+    gaps: list[str] = []
+    if real.status != mock.status:
+        gaps.append(f"HTTP status: real={real.status} mock={mock.status}")
+    if real.error_status != mock.error_status:
+        gaps.append(f"error.status: real={real.error_status!r} mock={mock.error_status!r}")
+    raw = _diff(skeleton(real.body), skeleton(mock.body))
+    scope: list[str] = []
+    for gap in raw:
+        if case.subset and (MISSING_FROM_MOCK in gap or MISSING_SHAPE in gap):
+            scope.append(gap)
         else:
-            ecarts.append(ecart)
-    if reel.statut == 401:
-        entete_reel = reel.entetes.get("www-authenticate", "")
-        entete_mock = mock.entetes.get("www-authenticate", "")
-        if bool(entete_reel) != bool(entete_mock):
-            ecarts.append("WWW-Authenticate : présence divergente")
+            gaps.append(gap)
+    if real.status == 401:
+        real_header = real.headers.get("www-authenticate", "")
+        mock_header = mock.headers.get("www-authenticate", "")
+        if bool(real_header) != bool(mock_header):
+            gaps.append("WWW-Authenticate: divergent presence")
     return {
-        "cas": cas.identifiant,
-        "note": cas.note,
-        "statut_reel": reel.statut,
-        "statut_mock": mock.statut,
-        "message_reel": reel.message_erreur,
-        "message_mock": mock.message_erreur,
-        "www_authenticate_reel": reel.entetes.get("www-authenticate", ""),
-        "www_authenticate_mock": mock.entetes.get("www-authenticate", ""),
-        "ecarts": ecarts,
-        "perimetre": perimetre,
-        "squelette_reel": squelette(reel.corps),
-        "squelette_mock": squelette(mock.corps),
+        "case": case.id,
+        "note": case.note,
+        "real_status": real.status,
+        "mock_status": mock.status,
+        "real_message": real.error_message,
+        "mock_message": mock.error_message,
+        "real_www_authenticate": real.headers.get("www-authenticate", ""),
+        "mock_www_authenticate": mock.headers.get("www-authenticate", ""),
+        "gaps": gaps,
+        "scope": scope,
+        "real_skeleton": skeleton(real.body),
+        "mock_skeleton": skeleton(mock.body),
     }
 
 
-# ── Vocabulaire : les VALEURS que rendent les dimensions ─────────────────────
+# ── Vocabulary: the VALUES that dimensions return ────────────────────────────
 
-# La forme ne suffit pas. Un mock qui rend `mobile` là où GA rend `mobile` mais
-# `Ile-de-France` là où GA rend `Île-de-France` produit du code consommateur
-# qui casse en prod sur un `==`. Ces dimensions ont un vocabulaire BORNÉ : leurs
-# valeurs réelles sont comparables telles quelles, sans comparer des chiffres.
-VOCABULAIRE: tuple[str, ...] = (
+# Shape isn't enough. A mock rendering `mobile` where GA renders `mobile` but
+# `Ile-de-France` where GA renders `Île-de-France` produces consumer code
+# that breaks in prod on an `==`. These dimensions have a BOUNDED vocabulary:
+# their real values are comparable as is, without comparing numbers.
+VOCABULARY: tuple[str, ...] = (
     "date",
     "week",
     "month",
@@ -772,131 +771,130 @@ VOCABULAIRE: tuple[str, ...] = (
 )
 
 
-def _valeurs(reponse: Reponse) -> list[str]:
-    if not isinstance(reponse.corps, dict):
+def _values(response: Response) -> list[str]:
+    if not isinstance(response.body, dict):
         return []
-    return [ligne["dimensionValues"][0]["value"] for ligne in reponse.corps.get("rows", [])]
+    return [row["dimensionValues"][0]["value"] for row in response.body.get("rows", [])]
 
 
-def _forme_valeur(valeur: str) -> str:
-    """Signature typographique d'une valeur : c'est elle qui trahit un écart de
-    casse ou d'accent, là où deux mondes n'ont de toute façon pas les mêmes
-    villes."""
-    marques = []
-    if valeur != valeur.lower():
-        marques.append("Maj")
-    if any(ord(c) > 127 for c in valeur):
-        marques.append("accents")
-    if valeur.startswith("(") and valeur.endswith(")"):
-        marques.append("(marqueur)")
-    if valeur.isdigit():
-        marques.append(f"{len(valeur)}chiffres")
-    return "+".join(marques) or "minuscules-ascii"
+def _value_shape(value: str) -> str:
+    """Typographic signature of a value: it's what betrays a casing or accent
+    gap, where the two worlds don't share cities anyway."""
+    marks = []
+    if value != value.lower():
+        marks.append("Upper")
+    if any(ord(c) > 127 for c in value):
+        marks.append("accents")
+    if value.startswith("(") and value.endswith(")"):
+        marks.append("(marker)")
+    if value.isdigit():
+        marks.append(f"{len(value)}digits")
+    return "+".join(marks) or "lowercase-ascii"
 
 
-def comparer_vocabulaire(reel: Reel, client: Any, module: Any, propriete: str) -> list[dict]:
-    resultats = []
-    for dimension in VOCABULAIRE:
-        cas = Cas(
-            f"vocabulaire:{dimension}",
-            RAPPORT,
+def compare_vocabulary(real: Real, client: Any, module: Any, property_id: str) -> list[dict]:
+    results = []
+    for dimension in VOCABULARY:
+        case = Case(
+            f"vocabulary:{dimension}",
+            REPORT,
             _base(
                 dateRanges=[{"startDate": "365daysAgo", "endDate": "yesterday"}],
                 dimensions=[{"name": dimension}],
                 limit=200,
             ),
         )
-        valeurs_reelles = _valeurs(reel.appeler(cas, propriete))
-        valeurs_mock = _valeurs(appeler_mock(client, module, cas))
-        formes_reelles = {_forme_valeur(v) for v in valeurs_reelles}
-        formes_mock = {_forme_valeur(v) for v in valeurs_mock}
-        resultats.append(
+        real_values = _values(real.call(case, property_id))
+        mock_values = _values(call_mock(client, module, case))
+        real_shapes = {_value_shape(v) for v in real_values}
+        mock_shapes = {_value_shape(v) for v in mock_values}
+        results.append(
             {
                 "dimension": dimension,
-                "reel": sorted(valeurs_reelles)[:40],
-                "mock": sorted(valeurs_mock)[:40],
-                "communes": sorted(set(valeurs_reelles) & set(valeurs_mock))[:40],
-                "formes_reelles": sorted(formes_reelles),
-                "formes_mock": sorted(formes_mock),
-                "formes_divergentes": sorted(formes_reelles ^ formes_mock),
+                "real": sorted(real_values)[:40],
+                "mock": sorted(mock_values)[:40],
+                "common": sorted(set(real_values) & set(mock_values))[:40],
+                "real_shapes": sorted(real_shapes),
+                "mock_shapes": sorted(mock_shapes),
+                "divergent_shapes": sorted(real_shapes ^ mock_shapes),
             }
         )
-    return resultats
+    return results
 
 
 def main() -> int:
-    analyseur = argparse.ArgumentParser(description=__doc__)
-    analyseur.add_argument("--cas", nargs="*", help="n'exécuter que ces identifiants")
-    analyseur.add_argument("--sortie", type=Path, help="écrit le rapport complet en JSON")
-    analyseur.add_argument(
-        "--details", action="store_true", help="affiche les squelettes des cas divergents"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--cases", nargs="*", help="only run these ids")
+    parser.add_argument("--output", type=Path, help="write the full report as JSON")
+    parser.add_argument(
+        "--details", action="store_true", help="print the skeletons of divergent cases"
     )
-    analyseur.add_argument(
-        "--vocabulaire",
+    parser.add_argument(
+        "--vocabulary",
         action="store_true",
-        help="compare les VALEURS des dimensions à vocabulaire borné",
+        help="compare the VALUES of bounded-vocabulary dimensions",
     )
-    options = analyseur.parse_args()
+    options = parser.parse_args()
 
-    chemin_sa = os.environ.get("GA_REAL_SA")
-    propriete = os.environ.get("GA_REAL_PROPERTY")
-    if not chemin_sa or not propriete:
-        print("GA_REAL_SA et GA_REAL_PROPERTY sont requis.", file=sys.stderr)
+    sa_path = os.environ.get("GA_REAL_SA")
+    property_id = os.environ.get("GA_REAL_PROPERTY")
+    if not sa_path or not property_id:
+        print("GA_REAL_SA and GA_REAL_PROPERTY are required.", file=sys.stderr)
         return 2
 
-    reel = Reel(Path(chemin_sa))
-    client, module = client_mock()
+    real = Real(Path(sa_path))
+    client, module = mock_client()
 
-    if options.vocabulaire:
-        vocabulaire = comparer_vocabulaire(reel, client, module, propriete)
-        for entree in vocabulaire:
-            print(f"== {entree['dimension']}")
-            print(f"   réel : {', '.join(entree['reel'][:20]) or '(aucune ligne)'}")
-            print(f"   mock : {', '.join(entree['mock'][:20]) or '(aucune ligne)'}")
-            print(f"   formes réel={entree['formes_reelles']} mock={entree['formes_mock']}")
-            if entree["formes_divergentes"]:
-                print(f"   ✗ formes divergentes : {entree['formes_divergentes']}")
-        if options.sortie:
-            options.sortie.write_text(json.dumps(vocabulaire, indent=2, ensure_ascii=False))
-            print(f"rapport → {options.sortie}")
+    if options.vocabulary:
+        vocabulary = compare_vocabulary(real, client, module, property_id)
+        for entry in vocabulary:
+            print(f"== {entry['dimension']}")
+            print(f"   real: {', '.join(entry['real'][:20]) or '(no rows)'}")
+            print(f"   mock: {', '.join(entry['mock'][:20]) or '(no rows)'}")
+            print(f"   shapes real={entry['real_shapes']} mock={entry['mock_shapes']}")
+            if entry["divergent_shapes"]:
+                print(f"   ✗ divergent shapes: {entry['divergent_shapes']}")
+        if options.output:
+            options.output.write_text(json.dumps(vocabulary, indent=2, ensure_ascii=False))
+            print(f"report → {options.output}")
         return 0
 
-    selection = [c for c in CAS if not options.cas or c.identifiant in options.cas]
+    selection = [c for c in CASES if not options.cases or c.id in options.cases]
 
-    resultats = []
-    for cas in selection:
-        reponse_reelle = reel.appeler(cas, propriete)
-        if reponse_reelle.statut == 403 and "SERVICE_DISABLED" in reponse_reelle.texte:
+    results = []
+    for case in selection:
+        real_response = real.call(case, property_id)
+        if real_response.status == 403 and "SERVICE_DISABLED" in real_response.text:
             print(
-                "L'API Data n'est pas activée sur le projet du compte de service.\n"
-                + reponse_reelle.message_erreur,
+                "The Data API is not enabled on the service account's project.\n"
+                + real_response.error_message,
                 file=sys.stderr,
             )
             return 3
-        resultats.append(comparer(cas, reponse_reelle, appeler_mock(client, module, cas)))
+        results.append(compare(case, real_response, call_mock(client, module, case)))
 
-    divergents = [r for r in resultats if r["ecarts"]]
-    largeur = max(len(r["cas"]) for r in resultats)
-    for resultat in resultats:
-        marque = "✗" if resultat["ecarts"] else "✓"
+    divergent = [r for r in results if r["gaps"]]
+    width = max(len(r["case"]) for r in results)
+    for result in results:
+        mark = "✗" if result["gaps"] else "✓"
         print(
-            f"{marque} {resultat['cas']:<{largeur}}  "
-            f"{resultat['statut_reel']}/{resultat['statut_mock']}"
-            + (f"  {len(resultat['ecarts'])} écart(s)" if resultat["ecarts"] else "")
+            f"{mark} {result['case']:<{width}}  "
+            f"{result['real_status']}/{result['mock_status']}"
+            + (f"  {len(result['gaps'])} gap(s)" if result["gaps"] else "")
         )
-        for ecart in resultat["ecarts"]:
-            print(f"    · {ecart}")
-        for hors in resultat.get("perimetre", []):
-            print(f"    ~ hors périmètre assumé : {hors}")
-        if options.details and resultat["ecarts"]:
-            print(f"    réel : {json.dumps(resultat['squelette_reel'], ensure_ascii=False)}")
-            print(f"    mock : {json.dumps(resultat['squelette_mock'], ensure_ascii=False)}")
+        for gap in result["gaps"]:
+            print(f"    · {gap}")
+        for out_of_scope in result.get("scope", []):
+            print(f"    ~ assumed out of scope: {out_of_scope}")
+        if options.details and result["gaps"]:
+            print(f"    real: {json.dumps(result['real_skeleton'], ensure_ascii=False)}")
+            print(f"    mock: {json.dumps(result['mock_skeleton'], ensure_ascii=False)}")
 
-    print(f"\n{len(resultats) - len(divergents)}/{len(resultats)} cas conformes")
-    if options.sortie:
-        options.sortie.write_text(json.dumps(resultats, indent=2, ensure_ascii=False))
-        print(f"rapport → {options.sortie}")
-    return 1 if divergents else 0
+    print(f"\n{len(results) - len(divergent)}/{len(results)} cases conforming")
+    if options.output:
+        options.output.write_text(json.dumps(results, indent=2, ensure_ascii=False))
+        print(f"report → {options.output}")
+    return 1 if divergent else 0
 
 
 if __name__ == "__main__":

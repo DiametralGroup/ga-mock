@@ -1,4 +1,4 @@
-"""Injection de pannes + plan de contrôle /__admin."""
+"""Failure injection + /__admin control plane."""
 
 import inspect
 import sys
@@ -7,142 +7,140 @@ import time
 import ga_mock
 from tests.conftest import ADMIN
 
-CHEMIN = "/v1beta/properties/424242001:runReport"
-CORPS = {
+PATH = "/v1beta/properties/424242001:runReport"
+BODY = {
     "dateRanges": [{"startDate": "2026-06-01", "endDate": "2026-06-02"}],
     "metrics": [{"name": "sessions"}],
 }
 
 
-def _injecter(client, **regle):
-    reponse = client.post("/__admin/inject", headers=ADMIN, json=regle)
-    assert reponse.status_code == 200, reponse.text
-    return reponse.json()
+def _inject(client, **rule):
+    response = client.post("/__admin/inject", headers=ADMIN, json=rule)
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
-def test_admin_exige_le_jeton(client):
+def test_admin_requires_the_token(client):
     assert client.get("/__admin/state").status_code == 401
-    faux = client.get("/__admin/state", headers={"X-Mock-Admin-Token": "faux"})
-    assert faux.status_code == 401
+    fake = client.get("/__admin/state", headers={"X-Mock-Admin-Token": "fake"})
+    assert fake.status_code == 401
     assert client.get("/__admin/state", headers=ADMIN).status_code == 200
 
 
-def test_montage_conditionnel_atteste_dans_la_source():
-    """Le contrat est que /__admin est ABSENT quand désactivé — pas monté puis
-    interdit. La suite tournant avec l'admin activé, on atteste le mécanisme
-    dans la source, comme boondmanager-mock."""
-    # sys.modules et non `ga_mock.app` : l'attribut est réassigné vers
-    # l'instance FastAPI par le __init__ du paquet, le module reste ici.
+def test_conditional_mounting_attested_in_the_source():
+    """The contract is that /__admin is ABSENT when disabled — not mounted
+    then forbidden. Since the suite runs with admin enabled, the mechanism
+    is attested in the source, like boondmanager-mock."""
+    # sys.modules and not `ga_mock.app`: the attribute gets reassigned to
+    # the FastAPI instance by the package's __init__, the module stays here.
     assert "if settings.admin_enabled:" in inspect.getsource(sys.modules["ga_mock.app"])
 
 
-def test_rate_limit_apres_seuil(client, bearer):
-    _injecter(
-        client, kind="rate_limit", scope="*:runReport", after_requests=2, retry_after_seconds=3
-    )
+def test_rate_limit_after_threshold(client, bearer):
+    _inject(client, kind="rate_limit", scope="*:runReport", after_requests=2, retry_after_seconds=3)
     for _ in range(2):
-        assert client.post(CHEMIN, headers=bearer, json=CORPS).status_code == 200
-    troisieme = client.post(CHEMIN, headers=bearer, json=CORPS)
-    assert troisieme.status_code == 429
-    assert troisieme.headers["Retry-After"] == "3"
-    assert troisieme.json()["error"]["status"] == "RESOURCE_EXHAUSTED"
-    # le scope ne touche pas /token : on peut toujours obtenir un jeton
-    jeton = client.post(
+        assert client.post(PATH, headers=bearer, json=BODY).status_code == 200
+    third = client.post(PATH, headers=bearer, json=BODY)
+    assert third.status_code == 429
+    assert third.headers["Retry-After"] == "3"
+    assert third.json()["error"]["status"] == "RESOURCE_EXHAUSTED"
+    # the scope doesn't touch /token: a token can still be obtained
+    token = client.post(
         "/token",
         data={
             "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
             "assertion": ga_mock.build_assertion(),
         },
     )
-    assert jeton.status_code == 200
+    assert token.status_code == 200
 
 
-def test_status_transitoire_puis_retour_a_la_normale(client, bearer):
-    _injecter(client, kind="status", scope="*:runReport", status=503, times=2)
+def test_transient_status_then_back_to_normal(client, bearer):
+    _inject(client, kind="status", scope="*:runReport", status=503, times=2)
     for _ in range(2):
-        reponse = client.post(CHEMIN, headers=bearer, json=CORPS)
-        assert reponse.status_code == 503
-        assert reponse.json()["error"]["status"] == "UNAVAILABLE"
-    assert client.post(CHEMIN, headers=bearer, json=CORPS).status_code == 200
+        response = client.post(PATH, headers=bearer, json=BODY)
+        assert response.status_code == 503
+        assert response.json()["error"]["status"] == "UNAVAILABLE"
+    assert client.post(PATH, headers=bearer, json=BODY).status_code == 200
 
 
-def test_status_persistant_jusqu_au_clear(client, bearer):
-    _injecter(client, kind="status", scope="*:runReport", status=500)
+def test_persistent_status_until_clear(client, bearer):
+    _inject(client, kind="status", scope="*:runReport", status=500)
     for _ in range(3):
-        assert client.post(CHEMIN, headers=bearer, json=CORPS).status_code == 500
+        assert client.post(PATH, headers=bearer, json=BODY).status_code == 500
     assert client.post("/__admin/inject/clear", headers=ADMIN).status_code == 200
-    assert client.post(CHEMIN, headers=bearer, json=CORPS).status_code == 200
+    assert client.post(PATH, headers=bearer, json=BODY).status_code == 200
 
 
-def test_auth_reject_preempte_un_bearer_valide(client, bearer):
-    regle = _injecter(client, kind="auth_reject", scope="*:runReport")
-    refus = client.post(CHEMIN, headers=bearer, json=CORPS)
-    assert refus.status_code == 401
-    assert refus.json()["error"]["status"] == "UNAUTHENTICATED"
-    suppression = client.delete(f"/__admin/inject/{regle['rule_id']}", headers=ADMIN)
-    assert suppression.status_code == 200
-    assert client.post(CHEMIN, headers=bearer, json=CORPS).status_code == 200
+def test_auth_reject_preempts_a_valid_bearer(client, bearer):
+    rule = _inject(client, kind="auth_reject", scope="*:runReport")
+    refused = client.post(PATH, headers=bearer, json=BODY)
+    assert refused.status_code == 401
+    assert refused.json()["error"]["status"] == "UNAUTHENTICATED"
+    deletion = client.delete(f"/__admin/inject/{rule['rule_id']}", headers=ADMIN)
+    assert deletion.status_code == 200
+    assert client.post(PATH, headers=bearer, json=BODY).status_code == 200
 
 
-def test_suppression_regle_inconnue(client):
+def test_delete_unknown_rule(client):
     assert client.delete("/__admin/inject/rule-999", headers=ADMIN).status_code == 404
 
 
-def test_latency_ralentit_puis_s_epuise(client, bearer):
-    _injecter(client, kind="latency", scope="*:runReport", seconds=0.15, times=1)
-    debut = time.perf_counter()
-    assert client.post(CHEMIN, headers=bearer, json=CORPS).status_code == 200
-    assert time.perf_counter() - debut >= 0.15
-    etat = client.get("/__admin/state", headers=ADMIN).json()
-    assert etat["injections"] == []
+def test_latency_slows_down_then_runs_out(client, bearer):
+    _inject(client, kind="latency", scope="*:runReport", seconds=0.15, times=1)
+    start = time.perf_counter()
+    assert client.post(PATH, headers=bearer, json=BODY).status_code == 200
+    assert time.perf_counter() - start >= 0.15
+    state = client.get("/__admin/state", headers=ADMIN).json()
+    assert state["injections"] == []
 
 
-def test_quota_exhausted_injecte(client, bearer):
-    _injecter(client, kind="quota_exhausted", scope="*:runReport", times=1)
-    reponse = client.post(CHEMIN, headers=bearer, json=CORPS)
-    assert reponse.status_code == 429
-    assert "per day" in reponse.json()["error"]["message"]
-    assert client.post(CHEMIN, headers=bearer, json=CORPS).status_code == 200
+def test_quota_exhausted_injected(client, bearer):
+    _inject(client, kind="quota_exhausted", scope="*:runReport", times=1)
+    response = client.post(PATH, headers=bearer, json=BODY)
+    assert response.status_code == 429
+    assert "per day" in response.json()["error"]["message"]
+    assert client.post(PATH, headers=bearer, json=BODY).status_code == 200
 
 
-def test_kind_inconnu_refuse(client):
-    reponse = client.post("/__admin/inject", headers=ADMIN, json={"kind": "explosion"})
-    assert reponse.status_code == 422
+def test_unknown_kind_rejected(client):
+    response = client.post("/__admin/inject", headers=ADMIN, json={"kind": "explosion"})
+    assert response.status_code == 422
 
 
-def test_reset_revient_au_baseline_de_l_environnement(client, bearer, monkeypatch):
-    """Le reset ne revient pas « à vide » mais à la configuration de
-    déploiement : une rate_limit posée par variable d'env doit survivre."""
+def test_reset_goes_back_to_the_environment_baseline(client, bearer, monkeypatch):
+    """Reset doesn't go back "empty" but to the deployment configuration: a
+    rate_limit set via env var must survive."""
     monkeypatch.setenv("GA_MOCK_RATE_LIMIT_AFTER", "1")
-    reponse = client.post("/__admin/reset", headers=ADMIN, json={})
-    assert reponse.json() == {"status": "reset", "seed": 42}
-    assert client.post(CHEMIN, headers=bearer, json=CORPS).status_code == 200
-    assert client.post(CHEMIN, headers=bearer, json=CORPS).status_code == 429
+    response = client.post("/__admin/reset", headers=ADMIN, json={})
+    assert response.json() == {"status": "reset", "seed": 42}
+    assert client.post(PATH, headers=bearer, json=BODY).status_code == 200
+    assert client.post(PATH, headers=bearer, json=BODY).status_code == 429
 
 
-def test_reset_change_le_monde_avec_la_seed(client, bearer):
-    reference = client.post(CHEMIN, headers=bearer, json=CORPS).json()
+def test_reset_changes_the_world_with_the_seed(client, bearer):
+    reference = client.post(PATH, headers=bearer, json=BODY).json()
     client.post("/__admin/reset", headers=ADMIN, json={"seed": 7})
-    autre_monde = client.post(CHEMIN, headers=bearer, json=CORPS).json()
-    assert autre_monde != reference
+    other_world = client.post(PATH, headers=bearer, json=BODY).json()
+    assert other_world != reference
     client.post("/__admin/reset", headers=ADMIN, json={"seed": 42})
-    retour = client.post(CHEMIN, headers=bearer, json=CORPS).json()
-    assert retour == reference
+    back = client.post(PATH, headers=bearer, json=BODY).json()
+    assert back == reference
 
 
-def test_clock_endpoint_et_etat(client):
-    avance = client.post("/__admin/clock", headers=ADMIN, json={"advance_seconds": 86_400})
-    assert avance.status_code == 200
-    assert avance.json()["virtual_now"].startswith("2026-07-16")
-    etat = client.get("/__admin/state", headers=ADMIN).json()
-    assert etat["clock_offset"] == 86_400
-    recul = client.post("/__admin/clock", headers=ADMIN, json={"advance_seconds": -5})
-    assert recul.status_code == 422
+def test_clock_endpoint_and_state(client):
+    advance = client.post("/__admin/clock", headers=ADMIN, json={"advance_seconds": 86_400})
+    assert advance.status_code == 200
+    assert advance.json()["virtual_now"].startswith("2026-07-16")
+    state = client.get("/__admin/state", headers=ADMIN).json()
+    assert state["clock_offset"] == 86_400
+    backward = client.post("/__admin/clock", headers=ADMIN, json={"advance_seconds": -5})
+    assert backward.status_code == 422
 
 
-def test_state_note_le_dernier_corps_de_rapport(client, bearer):
-    client.post(CHEMIN, headers=bearer, json=CORPS)
-    etat = client.get("/__admin/state", headers=ADMIN).json()
-    resume = etat["last_request_by_path"][CHEMIN]
-    assert resume["dateRanges"] == CORPS["dateRanges"]
-    assert resume["metrics"] == CORPS["metrics"]
+def test_state_records_the_last_report_body(client, bearer):
+    client.post(PATH, headers=bearer, json=BODY)
+    state = client.get("/__admin/state", headers=ADMIN).json()
+    summary = state["last_request_by_path"][PATH]
+    assert summary["dateRanges"] == BODY["dateRanges"]
+    assert summary["metrics"] == BODY["metrics"]

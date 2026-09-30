@@ -1,16 +1,16 @@
-"""Modèles pydantic du CONTRAT — la forme, pas la validation.
+"""pydantic models of the CONTRACT — the shape, not the validation.
 
-Les handlers rendent des `JSONResponse` : FastAPI documente donc ces modèles
-dans l'OpenAPI SANS revalider les sorties (un mock doit pouvoir servir des
-charges volontairement anormales, pannes injectées comprises). La validation
-des entrées est faite à la main dans report.py, au dialecte Google — jamais
-par pydantic, dont les 422 trahiraient FastAPI.
+Handlers return `JSONResponse`: FastAPI therefore documents these models in
+the OpenAPI schema WITHOUT revalidating outputs (a mock must be able to serve
+deliberately abnormal payloads, injected failures included). Input validation
+is done by hand in report.py, in the Google dialect — never by pydantic,
+whose 422s would give FastAPI away.
 
-Honnêteté : tout champ ou comportement non attesté contre la référence
-publique de l'API porte un marqueur `x-ga-confidence: unverified` (champ) ou
-une entrée dans UNVERIFIED_BEHAVIORS (comportement). Un test impose que chaque
-entrée soit documentée dans docs/UNVERIFIED-FIELDS.md — inventer sans le dire
-est une faute de build, pas une opinion.
+Honesty: any field or behavior unattested against the API's public reference
+carries an `x-ga-confidence: unverified` marker (field) or an entry in
+UNVERIFIED_BEHAVIORS (behavior). A test enforces that every entry is
+documented in docs/UNVERIFIED-FIELDS.md — inventing without saying so is a
+build failure, not an opinion.
 """
 
 from __future__ import annotations
@@ -19,10 +19,12 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-# Comportements approximés ou aux wordings non attestés. Chaque identifiant
-# DOIT apparaître dans docs/UNVERIFIED-FIELDS.md (test dédié). Ce qui a été
-# RELEVÉ sur le service réel en sort et passe dans docs/CONFORMITE-REELLE.md —
-# c'est le seul mouvement autorisé dans ce sens.
+# Approximated behaviors, or ones with unattested wordings. Each identifier
+# MUST appear in docs/UNVERIFIED-FIELDS.md (dedicated test). Whatever gets
+# RECORDED against the real service leaves here and moves into
+# docs/CONFORMITE-REELLE.md — the only move allowed in that direction.
+# NOTE: the tags below stay in French — they are cross-referenced verbatim
+# against docs/UNVERIFIED-FIELDS.md (outside this translation's scope).
 UNVERIFIED_BEHAVIORS: tuple[str, ...] = (
     "suggestions-did-you-mean",
     "raison-parseur-json",
@@ -46,7 +48,7 @@ def _unverified(note: str) -> dict[str, Any]:
     return {"x-ga-confidence": "unverified", "x-ga-note": note}
 
 
-# ── Requêtes ─────────────────────────────────────────────────────────────────
+# ── Requests ─────────────────────────────────────────────────────────────────
 
 
 class DateRange(BaseModel):
@@ -90,7 +92,7 @@ class BetweenFilter(BaseModel):
 
 
 class EmptyFilter(BaseModel):
-    """Message proto VIDE : `{}` est la charge attendue, pas un oubli."""
+    """EMPTY proto message: `{}` is the expected payload, not an oversight."""
 
 
 class FilterLeaf(BaseModel):
@@ -174,7 +176,7 @@ class BatchRunReportsRequest(BaseModel):
     requests: list[RunReportRequest] = Field(default=[], description="1 to 5 requests.")
 
 
-# ── Réponses ─────────────────────────────────────────────────────────────────
+# ── Responses ────────────────────────────────────────────────────────────────
 
 
 class DimensionHeader(BaseModel):
@@ -316,8 +318,8 @@ class ErrorResponse(BaseModel):
     error: ErrorStatus
 
 
-# Réponses d'erreur documentées sur chaque route de la surface Data.
-REPONSES_ERREUR: dict[int | str, dict[str, Any]] = {
+# Error responses documented on every route of the Data surface.
+ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     400: {"model": ErrorResponse, "description": "INVALID_ARGUMENT"},
     401: {"model": ErrorResponse, "description": "UNAUTHENTICATED"},
     403: {"model": ErrorResponse, "description": "PERMISSION_DENIED"},
@@ -325,12 +327,12 @@ REPONSES_ERREUR: dict[int | str, dict[str, Any]] = {
 }
 
 
-def corps_requete(modele: type[BaseModel]) -> dict[str, Any]:
-    """Bloc `requestBody` OpenAPI 3.1 auto-contenu ($defs locaux) : les
-    handlers gardent leur `Request` brut — documenter n'est pas valider."""
+def request_body(model: type[BaseModel]) -> dict[str, Any]:
+    """Self-contained OpenAPI 3.1 `requestBody` block (local $defs): handlers
+    keep their raw `Request` — documenting isn't validating."""
     return {
         "requestBody": {
             "required": True,
-            "content": {"application/json": {"schema": modele.model_json_schema()}},
+            "content": {"application/json": {"schema": model.model_json_schema()}},
         }
     }

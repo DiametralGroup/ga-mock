@@ -1,26 +1,25 @@
-"""Auth Google service-account, validée pour de vrai.
+"""Google service-account auth, validated for real.
 
-Deux moitiés :
-  • `/token` — le flux JWT-bearer de oauth2.googleapis.com : l'assertion RS256
-    est VÉRIFIÉE (structure, signature, iss, fenêtre temporelle, scope, aud)
-    contre la bi-clé factice committée. Un mock qui accepte n'importe quoi ne
-    teste rien : un client qui signe mal doit échouer ICI, pas en prod.
-  • les bearers — jetons opaques SANS ÉTAT (HMAC sur l'échéance + nonce),
-    expirés selon l'horloge VIRTUELLE : /__admin/clock fait donc vieillir les
-    jetons aussi, ce qui permet de tester le renouvellement côté client.
+Two halves:
+  • `/token` — the oauth2.googleapis.com JWT-bearer flow: the RS256 assertion
+    is ACTUALLY VERIFIED (structure, signature, iss, time window, scope, aud)
+    against the committed fake keypair. A mock that accepts anything tests
+    nothing: a client that signs badly must fail HERE, not in prod.
+  • bearers — STATELESS opaque tokens (HMAC over the expiry + nonce), expired
+    according to the VIRTUAL clock: /__admin/clock therefore ages tokens too,
+    which lets client-side renewal be tested.
 
-L'ORDRE des contrôles et les wordings sont désormais ATTESTÉS : ils ont été
-relevés sur oauth2.googleapis.com le 2026-09-02 avec un vrai compte de service
-(cf. docs/CONFORMITE-REELLE.md, section /token). Deux surprises reproduites
-ici parce qu'un consommateur les rencontrera en prod :
+The ORDER of checks and the wordings are now ATTESTED: they were recorded
+against oauth2.googleapis.com on 2026-09-02 with a real service account
+(cf. docs/CONFORMITE-REELLE.md, /token section). Two surprises reproduced
+here because a consumer will meet them in prod:
 
-  • une assertion structurellement indécodable ne sort PAS en `invalid_grant`
-    avec un message explicatif, mais en `invalid_request` / « Bad Request »
-    tout court — le vendeur ne dit pas ce qui cloche ;
-  • un `scope` bien formé mais non reconnu ne provoque PAS d'erreur : le
-    endpoint répond 200 avec un `id_token` et AUCUN `access_token`. Le client
-    qui fait `reponse["access_token"]` casse sur un KeyError, en prod comme
-    ici.
+  • a structurally undecodable assertion does NOT come out as `invalid_grant`
+    with an explanatory message, but as `invalid_request` / plain "Bad
+    Request" — the vendor doesn't say what's wrong;
+  • a well-formed but unrecognized `scope` does NOT cause an error: the
+    endpoint responds 200 with an `id_token` and NO `access_token`. A client
+    doing `response["access_token"]` breaks on a KeyError, in prod as here.
 """
 
 from __future__ import annotations
@@ -36,40 +35,40 @@ from urllib.parse import quote
 from . import keypair
 from .clock import virtual_now
 from .rsa_min import b64url, b64url_decode, sign, verify
-from .settings import BEARER_TTL_SECONDES, settings
+from .settings import BEARER_TTL_SECONDS, settings
 
 GRANT_TYPE_JWT_BEARER = "urn:ietf:params:oauth:grant-type:jwt-bearer"
-SCOPES_ACCEPTES = (
+ACCEPTED_SCOPES = (
     "https://www.googleapis.com/auth/analytics.readonly",
     "https://www.googleapis.com/auth/analytics",
 )
-TOLERANCE_SECONDES = 60
-DUREE_MAX_ASSERTION = 3600
-# Identifiant numérique du compte de service : `client_id` dans le JSON servi,
-# `sub` dans l'id_token — les deux DOIVENT concorder, comme chez le vendeur.
+TOLERANCE_SECONDS = 60
+MAX_ASSERTION_DURATION = 3600
+# Service account numeric identifier: `client_id` in the served JSON,
+# `sub` in the id_token — the two MUST match, like at the vendor.
 CLIENT_ID = "104727004242420010001"
 
-# Wordings relevés SUR le vendeur (2026-09-02). Ne pas « améliorer » : un
-# consommateur peut brancher dessus, et c'est exactement ce que le mock existe
-# pour lui permettre d'exercer.
+# Wordings recorded FROM the vendor (2026-09-02). Do not "improve" them: a
+# consumer may rely on them, and that's exactly what the mock exists to let
+# them exercise.
 _MESSAGE_BAD_REQUEST = "Bad Request"
 _MESSAGE_SIGNATURE = "Invalid JWT Signature."
-_MESSAGE_COMPTE = "Invalid grant: account not found"
-_MESSAGE_IAT_ABSENT = "Invalid JWT: iat (issued at) is not set."
-_MESSAGE_EXP_ABSENT = "Invalid JWT: exp (expiration time) is not set."
+_MESSAGE_ACCOUNT = "Invalid grant: account not found"
+_MESSAGE_IAT_MISSING = "Invalid JWT: iat (issued at) is not set."
+_MESSAGE_EXP_MISSING = "Invalid JWT: exp (expiration time) is not set."
 _MESSAGE_AUD = "Invalid JWT: Failed audience check."
 _MESSAGE_SCOPE = "Invalid OAuth scope or ID token audience provided."
-_MESSAGE_FENETRE = (
+_MESSAGE_WINDOW = (
     "Invalid JWT: Token must be a short-lived token (60 minutes) and in a "
     "reasonable timeframe. Check your iat and exp values in the JWT claim."
 )
 
 
-class ErreurToken(Exception):
-    """Erreur du endpoint /token, au format OAuth2 (`error`/`error_description`).
+class TokenError(Exception):
+    """/token endpoint error, in OAuth2 format (`error`/`error_description`).
 
-    PAS l'enveloppe google.rpc : oauth2.googleapis.com parle RFC 6749, seule
-    la surface Data API parle google.rpc.Status.
+    NOT the google.rpc envelope: oauth2.googleapis.com speaks RFC 6749, only
+    the Data API surface speaks google.rpc.Status.
     """
 
     def __init__(self, code: str, description: str) -> None:
@@ -78,171 +77,172 @@ class ErreurToken(Exception):
         self.description = description
 
 
-def _cle_bearer() -> bytes:
-    """Dérivée, pas tirée au sort : un redémarrage du mock ne doit pas
-    invalider les bearers d'un test en cours — tout est fonction de la
-    configuration, rien de l'instant du boot."""
+def _bearer_key() -> bytes:
+    """Derived, not randomly drawn: restarting the mock must not invalidate
+    the bearers of a test in progress — everything is a function of
+    configuration, nothing of the boot instant."""
     return hashlib.sha256(b"ga-mock:bearer:" + settings.sa_email.encode()).digest()
 
 
-def _fenetre_valide(iat: int, exp: int, reference: int) -> bool:
+def _window_valid(iat: int, exp: int, reference: int) -> bool:
     return not (
-        iat > reference + TOLERANCE_SECONDES
-        or exp < reference - TOLERANCE_SECONDES
+        iat > reference + TOLERANCE_SECONDS
+        or exp < reference - TOLERANCE_SECONDS
         or exp <= iat
-        or exp - iat > DUREE_MAX_ASSERTION + TOLERANCE_SECONDES
+        or exp - iat > MAX_ASSERTION_DURATION + TOLERANCE_SECONDS
     )
 
 
-def _segment_json(segment: str) -> dict[str, Any]:
-    """Un segment illisible sort en `invalid_request` / « Bad Request ».
+def _json_segment(segment: str) -> dict[str, Any]:
+    """An unreadable segment comes out as `invalid_request` / "Bad Request".
 
-    Attesté : le vendeur ne dit PAS ce qui cloche dans une assertion
-    indécodable — ni le segment fautif, ni la raison. Rendre un message
-    explicatif ici entraînerait le consommateur à un diagnostic qu'il n'aura
-    jamais en prod.
+    Attested: the vendor does NOT say what's wrong in an undecodable
+    assertion — neither the faulty segment nor the reason. Returning an
+    explanatory message here would train the consumer for a diagnostic they
+    will never get in prod.
     """
     try:
-        decode = json.loads(b64url_decode(segment))
+        decoded = json.loads(b64url_decode(segment))
     except (ValueError, UnicodeDecodeError) as exc:
-        raise ErreurToken("invalid_request", _MESSAGE_BAD_REQUEST) from exc
-    if not isinstance(decode, dict):
-        raise ErreurToken("invalid_request", _MESSAGE_BAD_REQUEST)
-    return decode
+        raise TokenError("invalid_request", _MESSAGE_BAD_REQUEST) from exc
+    if not isinstance(decoded, dict):
+        raise TokenError("invalid_request", _MESSAGE_BAD_REQUEST)
+    return decoded
 
 
-def _entier_jwt(valeur: Any) -> int | None:
-    """`iat`/`exp` acceptés en nombre OU en chaîne de chiffres — attesté : une
-    assertion portant `"iat": "1788361815"` obtient un jeton chez le vendeur."""
-    if isinstance(valeur, bool):
+def _jwt_int(value: Any) -> int | None:
+    """`iat`/`exp` accepted as a number OR a digit string — attested: an
+    assertion carrying `"iat": "1788361815"` gets a token from the vendor."""
+    if isinstance(value, bool):
         return None
-    if isinstance(valeur, int):
-        return valeur
-    if isinstance(valeur, str) and valeur.isdigit():
-        return int(valeur)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
     return None
 
 
-def valider_assertion(assertion: str) -> dict[str, Any]:
-    """Contrôles dans l'ORDRE du vrai endpoint, relevé le 2026-09-02 :
-    structure → signature → compte → présence de iat/exp → fenêtre → scope
-    non vide → audience. Retourne les claims."""
-    morceaux = assertion.split(".")
-    if len(morceaux) != 3 or not all(morceaux):
-        raise ErreurToken("invalid_request", _MESSAGE_BAD_REQUEST)
-    entete_b64, charge_b64, signature_b64 = morceaux
-    entete = _segment_json(entete_b64)
-    claims = _segment_json(charge_b64)
+def validate_assertion(assertion: str) -> dict[str, Any]:
+    """Checks in the ORDER of the real endpoint, recorded on 2026-09-02:
+    structure → signature → account → iat/exp presence → window → non-empty
+    scope → audience. Returns the claims."""
+    parts = assertion.split(".")
+    if len(parts) != 3 or not all(parts):
+        raise TokenError("invalid_request", _MESSAGE_BAD_REQUEST)
+    header_b64, payload_b64, signature_b64 = parts
+    header = _json_segment(header_b64)
+    claims = _json_segment(payload_b64)
     try:
         signature = b64url_decode(signature_b64)
     except ValueError as exc:
-        raise ErreurToken("invalid_request", _MESSAGE_BAD_REQUEST) from exc
-    # `alg` non-RS256 (y compris `none` ou absent) tombe sur le MÊME message
-    # que la signature fausse : le vendeur ne distingue pas les deux cas.
-    if entete.get("alg") != "RS256" or not verify(
-        f"{entete_b64}.{charge_b64}".encode(), signature, keypair.N, keypair.E
+        raise TokenError("invalid_request", _MESSAGE_BAD_REQUEST) from exc
+    # A non-RS256 `alg` (including `none` or absent) falls on the SAME
+    # message as a bad signature: the vendor doesn't distinguish the two.
+    if header.get("alg") != "RS256" or not verify(
+        f"{header_b64}.{payload_b64}".encode(), signature, keypair.N, keypair.E
     ):
-        raise ErreurToken("invalid_grant", _MESSAGE_SIGNATURE)
+        raise TokenError("invalid_grant", _MESSAGE_SIGNATURE)
     if claims.get("iss") != settings.sa_email:
-        raise ErreurToken("invalid_grant", _MESSAGE_COMPTE)
-    iat, exp = _entier_jwt(claims.get("iat")), _entier_jwt(claims.get("exp"))
+        raise TokenError("invalid_grant", _MESSAGE_ACCOUNT)
+    iat, exp = _jwt_int(claims.get("iat")), _jwt_int(claims.get("exp"))
     if iat is None:
-        raise ErreurToken("invalid_grant", _MESSAGE_IAT_ABSENT)
+        raise TokenError("invalid_grant", _MESSAGE_IAT_MISSING)
     if exp is None:
-        raise ErreurToken("invalid_grant", _MESSAGE_EXP_ABSENT)
-    # DEUX horloges de référence, l'assertion doit être valide contre l'UNE :
-    # un vrai client signe avec l'heure RÉELLE (septembre 2026 et au-delà),
-    # alors que le monde du mock est ANCRÉ (juillet 2026) — exiger la seule
-    # horloge virtuelle rejetterait tout client réel, exiger la seule horloge
-    # réelle casserait les assertions fabriquées contre l'ancre
-    # (build_assertion). Une assertion réellement périmée échoue contre LES
-    # DEUX. Affordance consignée (fenetre-assertion-double-horloge).
+        raise TokenError("invalid_grant", _MESSAGE_EXP_MISSING)
+    # TWO reference clocks, the assertion must be valid against EITHER: a
+    # real client signs with the REAL time (September 2026 and beyond),
+    # while the mock's world is ANCHORED (July 2026) — requiring only the
+    # virtual clock would reject every real client, requiring only the real
+    # clock would break assertions manufactured against the anchor
+    # (build_assertion). A genuinely expired assertion fails against BOTH.
+    # Affordance recorded (fenetre-assertion-double-horloge).
     if not any(
-        _fenetre_valide(iat, exp, reference)
+        _window_valid(iat, exp, reference)
         for reference in (int(virtual_now().timestamp()), int(time.time()))
     ):
-        raise ErreurToken("invalid_grant", _MESSAGE_FENETRE)
-    # Un scope VIDE est une erreur ; un scope non reconnu ne l'est pas — il
-    # bascule la réponse en id_token (cf. reponse_token). Attesté : audience
-    # fausse + scope vide sort en `invalid_scope`, donc ce contrôle-ci PRÉCÈDE
-    # celui de `aud`.
+        raise TokenError("invalid_grant", _MESSAGE_WINDOW)
+    # An EMPTY scope is an error; an unrecognized scope is not — it switches
+    # the response to id_token (cf. token_response). Attested: wrong audience
+    # + empty scope comes out as `invalid_scope`, so this check PRECEDES the
+    # `aud` one.
     if not str(claims.get("scope", "")).split():
-        raise ErreurToken("invalid_scope", _MESSAGE_SCOPE)
-    # `aud` : tolérant par construction — derrière compose, l'assertion vise
-    # http://ga-mock:8000/token pendant que le serveur se voit autrement. Le
-    # vendeur, lui, exige l'égalité stricte ; on vérifie la FORME, avec son
-    # message (écart assumé, consigné : aud-tolerant).
+        raise TokenError("invalid_scope", _MESSAGE_SCOPE)
+    # `aud`: tolerant by design — behind compose, the assertion targets
+    # http://ga-mock:8000/token while the server sees itself differently. The
+    # vendor requires strict equality; we check the SHAPE, with its message
+    # (deliberate gap, recorded: aud-tolerant).
     aud = str(claims.get("aud", ""))
     if not aud or not aud.rstrip("/").endswith("/token"):
-        raise ErreurToken("invalid_grant", _MESSAGE_AUD)
+        raise TokenError("invalid_grant", _MESSAGE_AUD)
     return claims
 
 
-def reponse_token(claims: dict[str, Any]) -> dict[str, Any]:
-    """Le corps 200 : `access_token`… ou `id_token` SEUL.
+def token_response(claims: dict[str, Any]) -> dict[str, Any]:
+    """The 200 body: `access_token`… or `id_token` ALONE.
 
-    Attesté : dès qu'UN des scopes demandés n'est pas un scope OAuth reconnu —
-    y compris quand un autre l'est — le endpoint bascule et rend un id_token
-    sans access_token. Ici « reconnu » vaut pour les scopes Analytics : le
-    mock n'a pas d'autre univers à offrir, et un consommateur qui demande
-    autre chose n'obtiendra de toute façon rien d'exploitable sur cette
-    surface.
+    Attested: as soon as ONE of the requested scopes isn't a recognized
+    OAuth scope — even when another one is — the endpoint switches and
+    returns an id_token without an access_token. Here "recognized" applies to
+    Analytics scopes: the mock has no other universe to offer, and a consumer
+    asking for something else won't get anything usable on this surface
+    anyway.
     """
     scopes = str(claims.get("scope", "")).split()
-    if all(s in SCOPES_ACCEPTES for s in scopes):
-        return emettre_bearer()
-    return {"id_token": emettre_id_token(claims)}
+    if all(s in ACCEPTED_SCOPES for s in scopes):
+        return issue_bearer()
+    return {"id_token": issue_id_token(claims)}
 
 
-def emettre_id_token(claims: dict[str, Any]) -> str:
-    """JWT d'identité signé par la bi-clé factice, claims calqués sur ceux
-    relevés chez le vendeur : `aud` porte le scope demandé, `iss` reste
-    accounts.google.com, `sub` l'identifiant numérique du compte."""
-    quand = int(virtual_now().timestamp())
-    entete = b64url(
+def issue_id_token(claims: dict[str, Any]) -> str:
+    """Identity JWT signed with the fake keypair, claims modeled on those
+    recorded at the vendor: `aud` carries the requested scope, `iss` stays
+    accounts.google.com, `sub` is the account's numeric identifier."""
+    now = int(virtual_now().timestamp())
+    header = b64url(
         json.dumps({"alg": "RS256", "kid": keypair.PRIVATE_KEY_ID, "typ": "JWT"}).encode()
     )
-    charge = b64url(
+    payload = b64url(
         json.dumps(
             {
                 "aud": str(claims.get("scope", "")),
                 "azp": settings.sa_email,
                 "email": settings.sa_email,
                 "email_verified": True,
-                "exp": quand + BEARER_TTL_SECONDES,
-                "iat": quand,
+                "exp": now + BEARER_TTL_SECONDS,
+                "iat": now,
                 "iss": "https://accounts.google.com",
                 "sub": CLIENT_ID,
             }
         ).encode()
     )
-    return f"{entete}.{charge}.{b64url(sign(f'{entete}.{charge}'.encode(), keypair.N, keypair.D))}"
+    signature = b64url(sign(f"{header}.{payload}".encode(), keypair.N, keypair.D))
+    return f"{header}.{payload}.{signature}"
 
 
-def emettre_bearer() -> dict[str, Any]:
-    echeance = int(virtual_now().timestamp()) + BEARER_TTL_SECONDES
-    charge = b64url(json.dumps({"exp": echeance, "n": b64url(os.urandom(9))}).encode())
-    mac = b64url(hmac.new(_cle_bearer(), charge.encode(), hashlib.sha256).digest())
+def issue_bearer() -> dict[str, Any]:
+    expiry = int(virtual_now().timestamp()) + BEARER_TTL_SECONDS
+    payload = b64url(json.dumps({"exp": expiry, "n": b64url(os.urandom(9))}).encode())
+    mac = b64url(hmac.new(_bearer_key(), payload.encode(), hashlib.sha256).digest())
     return {
-        "access_token": f"ya29.mock.{charge}.{mac}",
-        # 3599 et non 3600 : le vrai endpoint décompte la seconde d'émission.
-        "expires_in": BEARER_TTL_SECONDES - 1,
+        "access_token": f"ya29.mock.{payload}.{mac}",
+        # 3599 not 3600: the real endpoint deducts the issuance second.
+        "expires_in": BEARER_TTL_SECONDS - 1,
         "token_type": "Bearer",
     }
 
 
-def bearer_valide(token: str) -> bool:
-    prefixe = "ya29.mock."
-    if not token.startswith(prefixe):
+def bearer_valid(token: str) -> bool:
+    prefix = "ya29.mock."
+    if not token.startswith(prefix):
         return False
-    charge, separateur, mac = token[len(prefixe) :].partition(".")
-    if not separateur or not charge or not mac:
+    payload, separator, mac = token[len(prefix) :].partition(".")
+    if not separator or not payload or not mac:
         return False
-    attendu = b64url(hmac.new(_cle_bearer(), charge.encode(), hashlib.sha256).digest())
-    if not hmac.compare_digest(attendu, mac):
+    expected = b64url(hmac.new(_bearer_key(), payload.encode(), hashlib.sha256).digest())
+    if not hmac.compare_digest(expected, mac):
         return False
     try:
-        claims = json.loads(b64url_decode(charge))
+        claims = json.loads(b64url_decode(payload))
     except ValueError:
         return False
     exp = claims.get("exp")
@@ -256,42 +256,42 @@ def build_assertion(
     iat: int | None = None,
     lifetime: int = 3600,
 ) -> str:
-    """Signe une assertion avec la clé privée factice committée.
+    """Signs an assertion with the committed fake private key.
 
-    Analogue du `build_client_jwt` de boondmanager-mock : les tests des
-    consommateurs fabriquent leur jeton sans dépendance crypto. Les paramètres
-    permettent aussi de fabriquer des assertions INVALIDES (mauvais iss, durée
-    excessive…) pour tester les refus.
+    Analogous to boondmanager-mock's `build_client_jwt`: consumer tests build
+    their token without a crypto dependency. The parameters also allow
+    building INVALID assertions (bad iss, excessive duration…) to test
+    rejections.
     """
-    quand = int(virtual_now().timestamp()) if iat is None else iat
-    entete = b64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
-    charge = b64url(
+    now = int(virtual_now().timestamp()) if iat is None else iat
+    header = b64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+    payload = b64url(
         json.dumps(
             {
                 "iss": settings.sa_email if iss is None else iss,
-                "scope": SCOPES_ACCEPTES[0] if scope is None else scope,
+                "scope": ACCEPTED_SCOPES[0] if scope is None else scope,
                 "aud": aud,
-                "iat": quand,
-                "exp": quand + lifetime,
+                "iat": now,
+                "exp": now + lifetime,
             }
         ).encode()
     )
-    signature = b64url(sign(f"{entete}.{charge}".encode(), keypair.N, keypair.D))
-    return f"{entete}.{charge}.{signature}"
+    signature = b64url(sign(f"{header}.{payload}".encode(), keypair.N, keypair.D))
+    return f"{header}.{payload}.{signature}"
 
 
 def fixture_service_account(base_url: str) -> dict[str, str]:
-    """Le JSON de service account standard, `token_uri` pointé sur CE serveur.
+    """The standard service account JSON, `token_uri` pointed at THIS server.
 
-    Servi dynamiquement : committer une token_uri figée obligerait à deviner
-    l'hôte de déploiement (localhost:8013 ? ga-mock:8000 ?). L'URL de la
-    requête entrante le sait mieux que nous.
+    Served dynamically: committing a fixed token_uri would force guessing the
+    deployment host (localhost:8013? ga-mock:8000?). The incoming request's
+    URL knows better than we do.
     """
     return {
         "type": "service_account",
         "project_id": "boreal-conseil-mock",
         "private_key_id": keypair.PRIVATE_KEY_ID,
-        "private_key": keypair.PEM_PRIVE,
+        "private_key": keypair.PEM_PRIVATE_KEY,
         "client_email": settings.sa_email,
         "client_id": CLIENT_ID,
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",

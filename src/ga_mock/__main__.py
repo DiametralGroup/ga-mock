@@ -1,8 +1,8 @@
-"""Point d'entrée : `python -m ga_mock` (ou le script console `ga-mock`).
+"""Entry point: `python -m ga_mock` (or the `ga-mock` console script).
 
-HOST/PORT restent hors de `Settings` : ils n'intéressent que le processus
-serveur (compose publie 8012→8000, le sidecar Tekton rebinde via
-`GA_MOCK_PORT`), jamais la logique du mock.
+HOST/PORT stay out of `Settings`: they only concern the server process
+(compose publishes 8012→8000, the Tekton sidecar rebinds via
+`GA_MOCK_PORT`), never the mock's logic.
 """
 
 from __future__ import annotations

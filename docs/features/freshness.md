@@ -1,54 +1,51 @@
 ---
 type: feature
 description: >
-  Le modèle de fraîcheur du mock : latence de traitement par session, jours
-  récents partiels et monotones croissants, horloge virtuelle ancrée. C'est le
-  levier qui permet aux consommateurs de tester leur ré-extraction des N
-  derniers jours.
+  The mock's freshness model: per-session processing latency, partial and
+  monotonically growing recent days, an anchored virtual clock. This is the
+  lever that lets consumers test their re-extraction of the last N days.
 sources_of_truth:
   - src/ga_mock/dataset/sessions.py (lag_hours)
   - src/ga_mock/state.py (visible_sessions)
-  - src/ga_mock/clock.py (ancre + offset)
+  - src/ga_mock/clock.py (anchor + offset)
 review_triggers:
-  - changement de GA_MOCK_FRESHNESS_HOURS par défaut
-  - changement de l'ancre temporelle
+  - a change to the default GA_MOCK_FRESHNESS_HOURS
+  - a change to the time anchor
 update_policy: propose
 last_verified: 2026-08-02
 ---
 
-# Fraîcheur et horloge virtuelle
+# Freshness and the virtual clock
 
-GA4 ne fige pas un jour à minuit : les données d'un jour récent continuent
-d'arriver pendant ~48 h (traitement, hits tardifs). Un pipeline qui n'extrait
-que « les nouvelles dates » sous-compte donc silencieusement les derniers
-jours. Le mock reproduit ce piège pour que le pipeline apprenne à le déjouer.
+GA4 does not freeze a day at midnight: a recent day's data keeps arriving for
+~48h (processing, late hits). A pipeline that only extracts "new dates"
+therefore silently undercounts the most recent days. The mock reproduces this
+trap so the pipeline learns to work around it.
 
-## Le modèle
+## The model
 
-- Chaque session porte `lag_hours = FRESHNESS_HOURS x u^1.6` (u tiré au sort
-  par session) : la plupart des sessions sont visibles en quelques heures, la
-  queue s'étire jusqu'à la fenêtre complète.
-- Une session n'est SERVIE que si `ts + lag_hours <= virtual_now()`.
-- Conséquences : les jours sortis de la fenêtre sont complets et immuables ;
-  aujourd'hui/hier grossissent de façon MONOTONE quand l'horloge avance ;
-  l'historique ne se réécrit jamais (`build_day` est une fonction pure de
-  (seed, jour)).
+- Each session carries `lag_hours = FRESHNESS_HOURS x u^1.6` (u drawn per
+  session): most sessions are visible within a few hours, the tail stretches
+  to the full window.
+- A session is SERVED only if `ts + lag_hours <= virtual_now()`.
+- Consequences: days out of the window are complete and immutable; today and
+  yesterday grow MONOTONICALLY as the clock advances; history is never
+  rewritten (`build_day` is a pure function of (seed, day)).
 
-## L'horloge
+## The clock
 
-`virtual_now() = ANCRE (2026-07-15T14:30+02:00) + offset`. La base est FIXE —
-pas `time.time()` — parce que `today`/`NdaysAgo` font partie de la surface
-d'API et doivent tomber dans le monde généré, et parce que l'ancre partage la
-date de boondmanager-mock (jointures BI inter-sources cohérentes en dev).
+`virtual_now() = ANCHOR (2026-07-15T14:30+02:00) + offset`. The base is FIXED
+— not `time.time()` — because `today`/`NdaysAgo` are part of the API surface
+and must fall inside the generated world, and because the anchor shares its
+date with boondmanager-mock (consistent cross-source BI joins in dev).
 
-Avancer : `POST /__admin/clock {"advance_seconds": 86400}`. L'avance fait
-vieillir ENSEMBLE les dates relatives, l'expiration des bearers (TTL 3600 s
-virtuelles — un client doit renouveler son jeton après une grande avance) et
-la visibilité de fraîcheur. `POST /__admin/reset` ramène le temps à l'ancre.
+Advance it: `POST /__admin/clock {"advance_seconds": 86400}`. Advancing ages
+relative dates, bearer expiry (TTL 3600 virtual seconds — a client must renew
+its token after a big jump) and freshness visibility TOGETHER.
+`POST /__admin/reset` resets time back to the anchor.
 
-## Le geste consommateur attendu
+## The expected consumer behavior
 
-Ré-extraire une fenêtre glissante (>= 3 jours pour une fenêtre de 48 h) en
-`merge` sur la clé de grain, jamais un simple « append des nouvelles dates ».
-Le test de référence côté mock : `tests/test_freshness.py::
-test_scenario_incremental_bout_en_bout`.
+Re-extract a sliding window (>= 3 days for a 48h window) with a `merge` on
+the grain key, never a plain "append new dates". The mock's reference test:
+`tests/test_freshness.py::test_scenario_incremental_bout_en_bout`.

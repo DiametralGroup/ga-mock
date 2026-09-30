@@ -1,8 +1,8 @@
-"""Socle des tests.
+"""Test foundation.
 
-L'environnement est posé AVANT l'import du package : la configuration est lue
-à l'import (singleton `settings`), exactement comme boondmanager-mock. Poser
-la variable après l'import ne testerait qu'un mock déjà configuré autrement.
+The environment is set BEFORE the package import: config is read at import
+time (the `settings` singleton), exactly like boondmanager-mock. Setting the
+variable after import would only test a mock already configured differently.
 """
 
 import os
@@ -28,8 +28,8 @@ def client():
 
 @pytest.fixture()
 def bearer(client):
-    """En-tête Authorization prêt à l'emploi — le flux token COMPLET, pas un
-    passe-droit : si /token casse, toute la suite le voit immédiatement."""
+    """Ready-to-use Authorization header — the FULL token flow, not a
+    shortcut: if /token breaks, the whole suite sees it immediately."""
     reponse = client.post(
         "/token", data={"grant_type": GRANT, "assertion": ga_mock.build_assertion()}
     )

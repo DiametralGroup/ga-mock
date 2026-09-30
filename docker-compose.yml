@@ -1,9 +1,9 @@
-# Démarrage local du mock seul — `docker compose up --build` ou `make up`.
-# Le port hôte 8013 suit la table de l'écosystème insights360 (8010 boond,
-# 8011 entra, 8012 linkedin, 8013 ga). Un consommateur peut préférer l'image publiée :
+# Standalone local startup of the mock — `docker compose up --build` or `make up`.
+# Host port 8013 follows the insights360 ecosystem's table (8010 boond,
+# 8011 entra, 8012 linkedin, 8013 ga). A consumer may prefer the published image:
 #   image: ghcr.io/littlebigcode/ga-mock:latest
-# Le healthcheck est DANS l'image : `depends_on: condition: service_healthy`
-# fonctionne côté consommateur sans rien ajouter ici.
+# The healthcheck is IN the image: `depends_on: condition: service_healthy`
+# works on the consumer side with nothing extra to add here.
 services:
   ga-mock:
     build: .

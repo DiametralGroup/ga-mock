@@ -1,17 +1,17 @@
-"""Le registre : LA liste des dimensions et métriques servies.
+"""The registry: THE list of dimensions and metrics served.
 
-Tout ce que le mock sait faire est déclaré ici, et RIEN que ce qui est ici :
-la validation des requêtes, l'agrégation et le endpoint metadata dérivent du
-même registre — l'auto-description de `GET …/metadata` est donc exacte par
-construction, jamais un document entretenu à la main qui finirait par mentir.
+Everything the mock knows how to do is declared here, and NOTHING that isn't
+here: request validation, aggregation and the metadata endpoint all derive
+from the same registry — the self-description of `GET …/metadata` is
+therefore accurate by construction, never a hand-maintained document that
+eventually lies.
 
-Le fan-out : `pagePath` et `eventName` ne sont pas des attributs de session
-mais des sous-unités (une page VUE, un événement). Quand ils sont demandés,
-chaque session éclate en unités ; les métriques de portée session restent
-exactes parce que l'accumulateur ne compte une session qu'UNE fois par groupe
-(ensembles d'identifiants), pendant que les métriques de portée unité comptent
-chaque unité. La sémantique inter-portées de GA4 n'est qu'approchée — consigné
-dans docs/UNVERIFIED-FIELDS.md.
+The fan-out: `pagePath` and `eventName` are not session attributes but
+sub-units (a page VIEW, an event). When requested, each session explodes into
+units; session-scoped metrics stay accurate because the accumulator only
+counts a session ONCE per group (identifier sets), while unit-scoped metrics
+count each unit. GA4's cross-scope semantics are only approximated — recorded
+in docs/UNVERIFIED-FIELDS.md.
 """
 
 from __future__ import annotations
@@ -22,12 +22,12 @@ from datetime import date
 
 from .dataset.sessions import Session
 
-EVENEMENTS_CLES = frozenset({"generate_lead", "job_apply"})
+KEY_EVENTS = frozenset({"generate_lead", "job_apply"})
 
-# Anciens noms encore annoncés par `metadata`, relevés sur une vraie propriété.
-# Ils ne sont pas ACCEPTÉS en entrée pour autant : le champ est déclaratif, et
-# c'est ce que fait le service.
-NOMS_DEPRECIES: dict[str, tuple[str, ...]] = {
+# Former names still announced by `metadata`, recorded against a real
+# property. They are NOT accepted as input though: the field is declarative,
+# and that's what the service does.
+DEPRECATED_NAMES: dict[str, tuple[str, ...]] = {
     "dayOfWeek": ("dayOfWeekZero",),
     "sessionDefaultChannelGroup": ("sessionDefaultChannelGrouping",),
     "keyEvents": ("conversions",),
@@ -40,90 +40,90 @@ TYPE_SECONDS = "TYPE_SECONDS"
 
 
 @dataclass(frozen=True, slots=True)
-class Unite:
-    """Une session, éventuellement réduite à une page vue ou un événement."""
+class Unit:
+    """A session, possibly reduced to a page view or an event."""
 
     session: Session
     page: str | None = None
-    evenement: str | None = None
-    n_evenements: int = 1
+    event: str | None = None
+    event_count: int = 1
 
 
-class Accumulateur:
-    """L'état d'un groupe de résultat pendant l'agrégation.
+class Accumulator:
+    """The state of a result group during aggregation.
 
-    Les ensembles d'identifiants sont le cœur du contrat : `totalUsers` est un
-    dédoublonnage RÉEL, pas une somme — c'est toute la raison d'être du niveau
-    session du dataset.
+    Identifier sets are the heart of the contract: `totalUsers` is a REAL
+    deduplication, not a sum — that's the whole reason for the dataset's
+    session level to exist.
     """
 
     __slots__ = (
-        "duree",
+        "active_users",
+        "duration",
+        "engaged_sessions",
         "engagement",
-        "evenements",
-        "evenements_cles",
-        "nouveaux",
-        "pages_vues",
-        "sessions_avec_cle",
-        "sessions_engagees",
-        "sessions_vues",
+        "events",
+        "key_events",
+        "new_users",
+        "page_views",
+        "sessions_seen",
+        "sessions_with_key_event",
         "users",
-        "users_actifs",
     )
 
     def __init__(self) -> None:
-        self.sessions_vues: set[str] = set()
+        self.sessions_seen: set[str] = set()
         self.users: set[str] = set()
-        self.users_actifs: set[str] = set()
-        self.sessions_engagees = 0
-        self.sessions_avec_cle = 0
-        self.nouveaux = 0
-        self.duree = 0
+        self.active_users: set[str] = set()
+        self.engaged_sessions = 0
+        self.sessions_with_key_event = 0
+        self.new_users = 0
+        self.duration = 0
         self.engagement = 0
-        self.pages_vues = 0
-        self.evenements = 0
-        self.evenements_cles = 0
+        self.page_views = 0
+        self.events = 0
+        self.key_events = 0
 
-    def ajouter(self, unite: Unite, *, fan_page: bool, fan_event: bool) -> None:
-        s = unite.session
-        if s.session_id not in self.sessions_vues:
-            # Contributions de PORTÉE SESSION : une seule fois par groupe,
-            # même si la session y éclate en plusieurs unités.
-            self.sessions_vues.add(s.session_id)
+    def add(self, unit: Unit, *, fan_page: bool, fan_event: bool) -> None:
+        s = unit.session
+        if s.session_id not in self.sessions_seen:
+            # SESSION-SCOPED contributions: only once per group, even if the
+            # session fans out into several units within it.
+            self.sessions_seen.add(s.session_id)
             self.users.add(s.user_id)
             if s.engaged or s.is_new:
-                self.users_actifs.add(s.user_id)
+                self.active_users.add(s.user_id)
             if s.engaged:
-                self.sessions_engagees += 1
-            cles = sum(n for nom, n in s.events if nom in EVENEMENTS_CLES)
-            if cles:
-                self.sessions_avec_cle += 1
+                self.engaged_sessions += 1
+            key = sum(n for name, n in s.events if name in KEY_EVENTS)
+            if key:
+                self.sessions_with_key_event += 1
             if s.is_new:
-                self.nouveaux += 1
-            self.duree += s.duration_seconds
+                self.new_users += 1
+            self.duration += s.duration_seconds
             self.engagement += s.engagement_seconds
             if not fan_page:
-                self.pages_vues += len(s.pages)
+                self.page_views += len(s.pages)
             if not fan_event:
-                self.evenements += sum(n for _, n in s.events)
-                self.evenements_cles += cles
+                self.events += sum(n for _, n in s.events)
+                self.key_events += key
         if fan_page:
-            self.pages_vues += 1
+            self.page_views += 1
         if fan_event:
-            self.evenements += unite.n_evenements
-            if unite.evenement in EVENEMENTS_CLES:
-                self.evenements_cles += unite.n_evenements
+            self.events += unit.event_count
+            if unit.event in KEY_EVENTS:
+                self.key_events += unit.event_count
 
 
 # ── Dimensions ───────────────────────────────────────────────────────────────
 
 
-def _semaine(d: date) -> str:
-    """Numéro de semaine GA : semaines DIMANCHE-samedi, la semaine 01 commence
-    le 1er janvier (partielle). Règle de bord non attestée — UNVERIFIED."""
+def _week(d: date) -> str:
+    """GA week number: SUNDAY-Saturday weeks, week 01 starts on January 1st
+    (partial). Edge rule unattested — UNVERIFIED."""
     jan1 = date(d.year, 1, 1)
-    dimanche0_jan1 = (jan1.weekday() + 1) % 7
-    return f"{((d - jan1).days + dimanche0_jan1) // 7 + 1:02d}"
+    sunday0_jan1 = (jan1.weekday() + 1) % 7
+    return f"{((d - jan1).days + sunday0_jan1) // 7 + 1:02d}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,26 +132,26 @@ class Dimension:
     ui_name: str
     description: str
     category: str
-    extraire: Callable[[Unite], str] = field(repr=False)
-    portee: str = "session"  # "session" | "page" | "event" — pilote le fan-out
-    # Famille date : extraction possible depuis un simple jour calendaire, ce
-    # qui permet la « spine » keepEmptyRows sans fabriquer de fausse session.
-    depuis_date: Callable[[date], str] | None = field(default=None, repr=False)
+    extract: Callable[[Unit], str] = field(repr=False)
+    scope: str = "session"  # "session" | "page" | "event" — drives the fan-out
+    # Date family: extractable from a plain calendar day, which allows the
+    # keepEmptyRows "spine" without fabricating a fake session.
+    from_date: Callable[[date], str] | None = field(default=None, repr=False)
 
 
 def _fmt_date(d: date) -> str:
     return f"{d:%Y%m%d}"
 
 
-def _fmt_mois(d: date) -> str:
+def _fmt_month(d: date) -> str:
     return f"{d.month:02d}"
 
 
-def _fmt_annee_mois(d: date) -> str:
+def _fmt_year_month(d: date) -> str:
     return f"{d:%Y%m}"
 
 
-def _fmt_jour_semaine(d: date) -> str:
+def _fmt_day_of_week(d: date) -> str:
     return str((d.weekday() + 1) % 7)
 
 
@@ -164,39 +164,39 @@ DIMENSIONS: dict[str, Dimension] = {
             "The date of the session, formatted YYYYMMDD.",
             "Time",
             lambda u: _fmt_date(u.session.date),
-            depuis_date=_fmt_date,
+            from_date=_fmt_date,
         ),
         Dimension(
             "week",
             "Week",
             "The week of the session: weeks start on Sunday, week 01 starts on January 1st.",
             "Time",
-            lambda u: _semaine(u.session.date),
-            depuis_date=_semaine,
+            lambda u: _week(u.session.date),
+            from_date=_week,
         ),
         Dimension(
             "month",
             "Month",
             "The month of the session, a two digit number from 01 to 12.",
             "Time",
-            lambda u: _fmt_mois(u.session.date),
-            depuis_date=_fmt_mois,
+            lambda u: _fmt_month(u.session.date),
+            from_date=_fmt_month,
         ),
         Dimension(
             "yearMonth",
             "Year month",
             "The year and month of the session, formatted YYYYMM.",
             "Time",
-            lambda u: _fmt_annee_mois(u.session.date),
-            depuis_date=_fmt_annee_mois,
+            lambda u: _fmt_year_month(u.session.date),
+            from_date=_fmt_year_month,
         ),
         Dimension(
             "dayOfWeek",
             "Day of week",
             "The day of the week: a one digit number, starting with Sunday as 0.",
             "Time",
-            lambda u: _fmt_jour_semaine(u.session.date),
-            depuis_date=_fmt_jour_semaine,
+            lambda u: _fmt_day_of_week(u.session.date),
+            from_date=_fmt_day_of_week,
         ),
         Dimension(
             "sessionDefaultChannelGroup",
@@ -288,15 +288,15 @@ DIMENSIONS: dict[str, Dimension] = {
             "The path of the page that was viewed.",
             "Page / Screen",
             lambda u: u.page or "",
-            portee="page",
+            scope="page",
         ),
         Dimension(
             "eventName",
             "Event name",
             "The name of the event.",
             "Event",
-            lambda u: u.evenement or "",
-            portee="event",
+            lambda u: u.event or "",
+            scope="event",
         ),
         Dimension(
             "newVsReturning",
@@ -309,35 +309,35 @@ DIMENSIONS: dict[str, Dimension] = {
 }
 
 
-# ── Métriques ────────────────────────────────────────────────────────────────
+# ── Metrics ──────────────────────────────────────────────────────────────────
 
 
-def _ratio(numerateur: float, denominateur: float) -> float:
-    return numerateur / denominateur if denominateur else 0.0
+def _ratio(numerator: float, denominator: float) -> float:
+    return numerator / denominator if denominator else 0.0
 
 
 @dataclass(frozen=True, slots=True)
-class Metrique:
+class Metric:
     api_name: str
     ui_name: str
     description: str
     category: str
-    type_metrique: str
-    calculer: Callable[[Accumulateur], float | int] = field(repr=False)
+    metric_type: str
+    compute: Callable[[Accumulator], float | int] = field(repr=False)
 
 
-METRIQUES: dict[str, Metrique] = {
+METRICS: dict[str, Metric] = {
     m.api_name: m
     for m in (
-        Metrique(
+        Metric(
             "sessions",
             "Sessions",
             "The number of sessions.",
             "Session",
             TYPE_INTEGER,
-            lambda a: len(a.sessions_vues),
+            lambda a: len(a.sessions_seen),
         ),
-        Metrique(
+        Metric(
             "totalUsers",
             "Total users",
             "The number of distinct users.",
@@ -345,23 +345,23 @@ METRIQUES: dict[str, Metrique] = {
             TYPE_INTEGER,
             lambda a: len(a.users),
         ),
-        Metrique(
+        Metric(
             "activeUsers",
             "Active users",
             "The number of distinct users with an engaged session or a first visit.",
             "User",
             TYPE_INTEGER,
-            lambda a: len(a.users_actifs),
+            lambda a: len(a.active_users),
         ),
-        Metrique(
+        Metric(
             "newUsers",
             "New users",
             "The number of first-time visitor sessions.",
             "User",
             TYPE_INTEGER,
-            lambda a: a.nouveaux,
+            lambda a: a.new_users,
         ),
-        Metrique(
+        Metric(
             "engagedSessions",
             "Engaged sessions",
             "The number of sessions that "
@@ -369,35 +369,35 @@ METRIQUES: dict[str, Metrique] = {
             "views.",
             "Session",
             TYPE_INTEGER,
-            lambda a: a.sessions_engagees,
+            lambda a: a.engaged_sessions,
         ),
-        Metrique(
+        Metric(
             "engagementRate",
             "Engagement rate",
             "Engaged sessions divided by sessions.",
             "Session",
             TYPE_FLOAT,
-            lambda a: _ratio(a.sessions_engagees, len(a.sessions_vues)),
+            lambda a: _ratio(a.engaged_sessions, len(a.sessions_seen)),
         ),
-        Metrique(
+        Metric(
             "bounceRate",
             "Bounce rate",
             "The percentage of sessions that were not engaged: 1 minus the engagement rate.",
             "Session",
             TYPE_FLOAT,
             lambda a: (
-                1.0 - _ratio(a.sessions_engagees, len(a.sessions_vues)) if a.sessions_vues else 0.0
+                1.0 - _ratio(a.engaged_sessions, len(a.sessions_seen)) if a.sessions_seen else 0.0
             ),
         ),
-        Metrique(
+        Metric(
             "averageSessionDuration",
             "Average session duration",
             "The mean session duration, in seconds.",
             "Session",
             TYPE_SECONDS,
-            lambda a: _ratio(a.duree, len(a.sessions_vues)),
+            lambda a: _ratio(a.duration, len(a.sessions_seen)),
         ),
-        Metrique(
+        Metric(
             "userEngagementDuration",
             "User engagement",
             "The total time the website was in the foreground, in seconds.",
@@ -405,65 +405,66 @@ METRIQUES: dict[str, Metrique] = {
             TYPE_SECONDS,
             lambda a: a.engagement,
         ),
-        Metrique(
+        Metric(
             "screenPageViews",
             "Views",
             "The number of page views.",
             "Page / Screen",
             TYPE_INTEGER,
-            lambda a: a.pages_vues,
+            lambda a: a.page_views,
         ),
-        Metrique(
+        Metric(
             "screenPageViewsPerSession",
             "Views per session",
             "Page views divided by sessions.",
             "Page / Screen",
             TYPE_FLOAT,
-            lambda a: _ratio(a.pages_vues, len(a.sessions_vues)),
+            lambda a: _ratio(a.page_views, len(a.sessions_seen)),
         ),
-        Metrique(
+        Metric(
             "eventCount",
             "Event count",
             "The total number of events.",
             "Event",
             TYPE_INTEGER,
-            lambda a: a.evenements,
+            lambda a: a.events,
         ),
-        Metrique(
+        Metric(
             "keyEvents",
             "Key events",
             "The number of key events (generate_lead, job_apply).",
             "Event",
             TYPE_FLOAT,
-            lambda a: float(a.evenements_cles),
+            lambda a: float(a.key_events),
         ),
-        Metrique(
+        Metric(
             "sessionKeyEventRate",
             "Session key event rate",
             "The percentage of sessions in which a key event occurred.",
             "Session",
             TYPE_FLOAT,
-            lambda a: _ratio(a.sessions_avec_cle, len(a.sessions_vues)),
+            lambda a: _ratio(a.sessions_with_key_event, len(a.sessions_seen)),
         ),
-        Metrique(
+        Metric(
             "sessionsPerUser",
-            # Le nom d'interface dit ce que la formule fait VRAIMENT : le
-            # dénominateur est le nombre d'utilisateurs ACTIFS, pas le total.
-            # Relevé sur le service — le mock divisait par totalUsers.
+            # The UI name says what the formula ACTUALLY does: the
+            # denominator is the number of ACTIVE users, not the total.
+            # Recorded from the service — the mock used to divide by
+            # totalUsers.
             "Sessions per active user",
             "Sessions divided by active users.",
             "Session",
             TYPE_FLOAT,
-            lambda a: _ratio(len(a.sessions_vues), len(a.users_actifs)),
+            lambda a: _ratio(len(a.sessions_seen), len(a.active_users)),
         ),
     )
 }
 
 
-# Les comparaisons livrées d'office par GA4, relevées sur une vraie propriété.
-# Elles ne sont PAS servies pour `properties/0` : le zéro décrit le schéma
-# commun, les comparaisons appartiennent à une propriété.
-COMPARAISONS_STANDARD: tuple[dict[str, str], ...] = (
+# Comparisons shipped by default by GA4, recorded against a real property.
+# They are NOT served for `properties/0`: zero describes the schema common to
+# all properties, comparisons belong to a property.
+STANDARD_COMPARISONS: tuple[dict[str, str], ...] = (
     {
         "apiName": "comparisons/allUsers",
         "uiName": "All Users",
@@ -512,23 +513,23 @@ COMPARAISONS_STANDARD: tuple[dict[str, str], ...] = (
 )
 
 
-def _entree_metadata(api_name: str, base: dict[str, object]) -> dict[str, object]:
-    """Une entrée de `metadata`, aux omissions proto3 près.
+def _metadata_entry(api_name: str, base: dict[str, object]) -> dict[str, object]:
+    """A `metadata` entry, down to the proto3 omissions.
 
-    `customDefinition` est ABSENT quand il vaut false — le service ne le rend
-    jamais pour les champs standard, et le mock l'écrivait systématiquement.
+    `customDefinition` is ABSENT when false — the service never returns it
+    for standard fields, and the mock used to write it unconditionally.
     """
-    if api_name in NOMS_DEPRECIES:
-        base["deprecatedApiNames"] = list(NOMS_DEPRECIES[api_name])
+    if api_name in DEPRECATED_NAMES:
+        base["deprecatedApiNames"] = list(DEPRECATED_NAMES[api_name])
     return base
 
 
 def metadata_payload(property_id: str) -> dict[str, object]:
-    """Le corps de `GET /v1beta/properties/{id}/metadata` — dérivé du registre."""
-    charge: dict[str, object] = {
+    """The body of `GET /v1beta/properties/{id}/metadata` — derived from the registry."""
+    body: dict[str, object] = {
         "name": f"properties/{property_id}/metadata",
         "dimensions": [
-            _entree_metadata(
+            _metadata_entry(
                 d.api_name,
                 {
                     "apiName": d.api_name,
@@ -540,19 +541,19 @@ def metadata_payload(property_id: str) -> dict[str, object]:
             for d in DIMENSIONS.values()
         ],
         "metrics": [
-            _entree_metadata(
+            _metadata_entry(
                 m.api_name,
                 {
                     "apiName": m.api_name,
                     "uiName": m.ui_name,
                     "description": m.description,
                     "category": m.category,
-                    "type": m.type_metrique,
+                    "type": m.metric_type,
                 },
             )
-            for m in METRIQUES.values()
+            for m in METRICS.values()
         ],
     }
     if property_id != "0":
-        charge["comparisons"] = [dict(c) for c in COMPARAISONS_STANDARD]
-    return charge
+        body["comparisons"] = [dict(c) for c in STANDARD_COMPARISONS]
+    return body

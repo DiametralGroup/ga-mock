@@ -1,5 +1,5 @@
-"""Le monde généré : les sessions du site de Boréal Conseil."""
+"""The generated world: the sessions of the Boréal Conseil site."""
 
-from .sessions import DEBUT_HISTORIQUE, Session, build_day, planned_new
+from .sessions import HISTORY_START, Session, build_day, planned_new
 
-__all__ = ["DEBUT_HISTORIQUE", "Session", "build_day", "planned_new"]
+__all__ = ["HISTORY_START", "Session", "build_day", "planned_new"]
