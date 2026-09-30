@@ -12,14 +12,15 @@ paths:
       tags:
       - oauth2
       summary: Service-account JWT-bearer token exchange
-      description: 'Endpoint oauth2.googleapis.com/token — flux service account JWT-bearer.
+      description: 'oauth2.googleapis.com/token endpoint — service account JWT-bearer
+        flow.
 
 
-        Le corps est parsé à la main (urllib) plutôt que via `request.form()` :
+        The body is parsed by hand (urllib) rather than via `request.form()`:
 
-        Starlette délègue les formulaires à python-multipart, et un corps
+        Starlette delegates forms to python-multipart, and a urlencoded body
 
-        urlencoded ne justifie pas d''élargir les dépendances runtime.'
+        doesn''t justify widening the runtime dependencies.'
       operationId: token_token_post
       responses:
         '200':
@@ -136,8 +137,8 @@ paths:
                   title: DimensionSpec
                   type: object
                 EmptyFilter:
-                  description: 'Message proto VIDE : `{}` est la charge attendue,
-                    pas un oubli.'
+                  description: 'EMPTY proto message: `{}` is the expected payload,
+                    not an oversight.'
                   properties: {}
                   title: EmptyFilter
                   type: object
@@ -373,12 +374,12 @@ paths:
   /v1beta/properties/{property_id}:batchRunReports:
     post:
       summary: Run up to 5 reports in one call
-      description: '≤ 5 sous-rapports ; l''auth, la propriété et le JSON se contrôlent
-        UNE
+      description: '<=5 sub-reports; auth, property and JSON are checked ONCE at the
+        batch
 
-        fois au niveau du lot, puis chaque sous-rapport traverse le pipeline
+        level, then each sub-report goes through the full pipeline — one invalid
 
-        complet — une sous-requête invalide fait échouer tout le lot.'
+        sub-request fails the whole batch.'
       operationId: batch_run_reports_v1beta_properties__property_id__batchRunReports_post
       parameters:
       - name: property_id
@@ -478,8 +479,8 @@ paths:
                   title: DimensionSpec
                   type: object
                 EmptyFilter:
-                  description: 'Message proto VIDE : `{}` est la charge attendue,
-                    pas un oubli.'
+                  description: 'EMPTY proto message: `{}` is the expected payload,
+                    not an oversight.'
                   properties: {}
                   title: EmptyFilter
                   type: object
@@ -728,12 +729,12 @@ paths:
   /v1beta/properties/{property_id}/metadata:
     get:
       summary: Dimensions and metrics available on the property
-      description: 'L''auto-description de la propriété — générée DEPUIS le registre.
+      description: 'The property''s self-description — generated FROM the registry.
 
 
-        `properties/0/metadata` est admis, comme chez Google : le zéro désigne les
+        `properties/0/metadata` is accepted, like at Google: zero designates the
 
-        métadonnées communes à toutes les propriétés.'
+        metadata common to all properties.'
       operationId: metadata_v1beta_properties__property_id__metadata_get
       parameters:
       - name: property_id

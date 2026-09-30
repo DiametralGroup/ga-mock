@@ -1,14 +1,14 @@
-"""Assemblage de l'application.
+"""Application assembly.
 
-Le mock sert TROIS surfaces sur un seul serveur :
-  • `/token` — l'équivalent de oauth2.googleapis.com (flux service account) ;
-  • `/v1beta/...` — l'équivalent de analyticsdata.googleapis.com ;
-  • le hors-contrat : `/health`, `/__fixtures/*`, `/__admin/*` (jamais dans
-    l'OpenAPI publié).
+The mock serves THREE surfaces on a single server:
+  • `/token` — the oauth2.googleapis.com equivalent (service account flow);
+  • `/v1beta/...` — the analyticsdata.googleapis.com equivalent;
+  • out-of-contract: `/health`, `/__fixtures/*`, `/__admin/*` (never in the
+    published OpenAPI).
 
-En prod ce sont deux hôtes Google distincts — le consommateur configure donc
-DEUX URLs (`GA_API_URL`, `GA_TOKEN_URL`) ; ici un seul process suffit, les
-chemins ne se recouvrent pas.
+In prod these are two distinct Google hosts — the consumer therefore
+configures TWO URLs (`GA_API_URL`, `GA_TOKEN_URL`); here a single process is
+enough, the paths don't overlap.
 """
 
 from __future__ import annotations
@@ -24,27 +24,27 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .auth import (
     GRANT_TYPE_JWT_BEARER,
-    ErreurToken,
-    bearer_valide,
+    TokenError,
+    bearer_valid,
     fixture_service_account,
-    reponse_token,
-    valider_assertion,
+    token_response,
+    validate_assertion,
 )
 from .errors import (
-    MESSAGE_401_INVALIDE,
-    MESSAGE_401_MANQUANT,
-    MESSAGE_403_PROPRIETE,
-    MESSAGE_403_PROPRIETE_INVALIDE,
-    WWW_AUTHENTICATE_401_INVALIDE,
-    WWW_AUTHENTICATE_401_MANQUANT,
-    ErreurQuota,
-    detail_credentials_manquantes,
-    erreur,
+    MESSAGE_401_INVALID,
+    MESSAGE_401_MISSING,
+    MESSAGE_403_INVALID_PROPERTY,
+    MESSAGE_403_PROPERTY,
+    WWW_AUTHENTICATE_401_INVALID,
+    WWW_AUTHENTICATE_401_MISSING,
+    QuotaError,
+    detail_missing_credentials,
+    error,
     page_html_404,
 )
 from .injection import engine
 from .models import (
-    REPONSES_ERREUR,
+    ERROR_RESPONSES,
     BatchRunReportsRequest,
     BatchRunReportsResponse,
     MetadataResponse,
@@ -52,10 +52,10 @@ from .models import (
     RunReportRequest,
     RunReportResponse,
     TokenResponse,
-    corps_requete,
+    request_body,
 )
 from .registry import metadata_payload
-from .report import ErreurRequete, executer_run_report
+from .report import RequestError, execute_run_report
 from .settings import settings
 
 app = FastAPI(title="Google Analytics 4 mock", version="0.1.0", docs_url="/docs")
@@ -67,61 +67,61 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "ga-mock"}
 
 
-def _pre_traitement(request: Request) -> JSONResponse | None:
-    """Le point UNIQUE d'injection, évalué AVANT l'authentification : une
-    `auth_reject` doit pouvoir préempter un bearer valide, une `latency`
-    s'appliquer même à un appel token."""
-    chemin = request.url.path
-    engine.observer(chemin)
-    return engine.evaluer(chemin)
+def _preprocess(request: Request) -> JSONResponse | None:
+    """The SINGLE injection point, evaluated BEFORE authentication: an
+    `auth_reject` must be able to preempt a valid bearer, a `latency` must
+    apply even to a token call."""
+    path = request.url.path
+    engine.observe(path)
+    return engine.evaluate(path)
 
 
-def _resume_rapport(corps: dict[str, object]) -> dict[str, object]:
+def _report_summary(body: dict[str, object]) -> dict[str, object]:
     return {
-        cle: corps[cle]
-        for cle in ("dateRanges", "dimensions", "metrics", "limit", "offset")
-        if cle in corps
+        key: body[key]
+        for key in ("dateRanges", "dimensions", "metrics", "limit", "offset")
+        if key in body
     }
 
 
-# Ce qui n'est PAS le vendeur : ces chemins existent pour le développeur, et
-# leurs erreurs doivent lui parler — pas imiter une passerelle Google.
-CHEMINS_AFFORDANCE = ("/health", "/__admin", "/__fixtures", "/docs", "/openapi.json")
+# What is NOT the vendor: these paths exist for the developer, and their
+# errors must speak to them — not imitate a Google gateway.
+AFFORDANCE_PATHS = ("/health", "/__admin", "/__fixtures", "/docs", "/openapi.json")
 
-# Noms gRPC complets des méthodes, tels que le vendeur les inscrit dans le
-# `details` d'un 401 « credential manquant ».
-METHODE_RPC = {
+# Full gRPC method names, as the vendor writes them in the `details` of a
+# "missing credential" 401.
+RPC_METHOD = {
     "runReport": "google.analytics.data.v1beta.BetaAnalyticsData.RunReport",
     "batchRunReports": "google.analytics.data.v1beta.BetaAnalyticsData.BatchRunReports",
     "getMetadata": "google.analytics.data.v1beta.BetaAnalyticsData.GetMetadata",
 }
 
 
-def _verifier_bearer(request: Request, methode_rpc: str) -> JSONResponse | None:
-    """Garde des endpoints DATA — enveloppe google.rpc, pas RFC 6749.
+def _check_bearer(request: Request, rpc_method: str) -> JSONResponse | None:
+    """Guard for the DATA endpoints — google.rpc envelope, not RFC 6749.
 
-    Seul `/token` parle le dialecte OAuth2 ; tout le reste de la surface
-    répond comme analyticsdata.googleapis.com.
+    Only `/token` speaks the OAuth2 dialect; the rest of the surface answers
+    like analyticsdata.googleapis.com.
 
-    DEUX refus distincts, attestés : en-tête absent → « missing required
-    authentication credential », avec un `details` google.rpc.ErrorInfo et un
-    `WWW-Authenticate` SANS `error=` ; jeton présent mais refusé → « had
-    invalid authentication credentials », sans `details`, avec
-    `error="invalid_token"`. Le client qui ne sait pas s'il doit s'authentifier
-    ou RENOUVELER lit exactement cette différence.
+    TWO distinct rejections, attested: header absent → "missing required
+    authentication credential", with a google.rpc.ErrorInfo `details` and a
+    `WWW-Authenticate` WITHOUT `error=`; token present but rejected → "had
+    invalid authentication credentials", with no `details`, with
+    `error="invalid_token"`. A client that doesn't know whether it should
+    authenticate or RENEW reads exactly this difference.
     """
-    autorisation = request.headers.get("Authorization", "")
-    if not autorisation:
-        return erreur(
+    authorization = request.headers.get("Authorization", "")
+    if not authorization:
+        return error(
             401,
-            MESSAGE_401_MANQUANT,
-            details=detail_credentials_manquantes(methode_rpc),
-            headers={"WWW-Authenticate": WWW_AUTHENTICATE_401_MANQUANT},
+            MESSAGE_401_MISSING,
+            details=detail_missing_credentials(rpc_method),
+            headers={"WWW-Authenticate": WWW_AUTHENTICATE_401_MISSING},
         )
-    if autorisation.startswith("Bearer ") and bearer_valide(autorisation[7:]):
+    if authorization.startswith("Bearer ") and bearer_valid(authorization[7:]):
         return None
-    return erreur(
-        401, MESSAGE_401_INVALIDE, headers={"WWW-Authenticate": WWW_AUTHENTICATE_401_INVALIDE}
+    return error(
+        401, MESSAGE_401_INVALID, headers={"WWW-Authenticate": WWW_AUTHENTICATE_401_INVALID}
     )
 
 
@@ -138,227 +138,228 @@ def _verifier_bearer(request: Request, methode_rpc: str) -> JSONResponse | None:
     summary="Service-account JWT-bearer token exchange",
 )
 async def token(request: Request) -> JSONResponse:
-    """Endpoint oauth2.googleapis.com/token — flux service account JWT-bearer.
+    """oauth2.googleapis.com/token endpoint — service account JWT-bearer flow.
 
-    Le corps est parsé à la main (urllib) plutôt que via `request.form()` :
-    Starlette délègue les formulaires à python-multipart, et un corps
-    urlencoded ne justifie pas d'élargir les dépendances runtime.
+    The body is parsed by hand (urllib) rather than via `request.form()`:
+    Starlette delegates forms to python-multipart, and a urlencoded body
+    doesn't justify widening the runtime dependencies.
     """
-    if (panne := _pre_traitement(request)) is not None:
-        return panne
-    brut = (await request.body()).decode("utf-8", errors="replace")
-    champs = {cle: valeurs[-1] for cle, valeurs in parse_qs(brut, keep_blank_values=True).items()}
-    if champs.get("grant_type") != GRANT_TYPE_JWT_BEARER:
+    if (failure := _preprocess(request)) is not None:
+        return failure
+    raw = (await request.body()).decode("utf-8", errors="replace")
+    fields = {key: values[-1] for key, values in parse_qs(raw, keep_blank_values=True).items()}
+    if fields.get("grant_type") != GRANT_TYPE_JWT_BEARER:
         return JSONResponse(
             status_code=400,
             content={
                 "error": "unsupported_grant_type",
-                "error_description": f"Invalid grant_type: {champs.get('grant_type', '')}",
+                "error_description": f"Invalid grant_type: {fields.get('grant_type', '')}",
             },
         )
     try:
-        claims = valider_assertion(champs.get("assertion", ""))
-    except ErreurToken as exc:
+        claims = validate_assertion(fields.get("assertion", ""))
+    except TokenError as exc:
         return JSONResponse(
             status_code=400,
             content={"error": exc.code, "error_description": exc.description},
         )
-    # 200 ne veut pas dire `access_token` : un scope non reconnu rend un
-    # id_token SEUL, comme le vrai endpoint.
-    return JSONResponse(reponse_token(claims))
+    # 200 doesn't mean `access_token`: an unrecognized scope returns an
+    # id_token ALONE, like the real endpoint.
+    return JSONResponse(token_response(claims))
 
 
 @app.get("/__fixtures/service-account.json", include_in_schema=False)
 def fixture_sa(request: Request) -> JSONResponse:
-    """Hors contrat, comme /__fixtures/remuneration.csv chez boondmanager-mock :
-    une commodité de dev, pas un chemin Google."""
+    """Out of contract, like /__fixtures/remuneration.csv at
+    boondmanager-mock: a dev convenience, not a Google path."""
     return JSONResponse(fixture_service_account(str(request.base_url).rstrip("/")))
 
 
-def _verifier_propriete(property_id: str, *, zero_admis: bool = False) -> JSONResponse | None:
-    """400 sur un identifiant non numérique, 403 sur une AUTRE propriété : le
-    jeton du mock n'a de droits que sur la propriété configurée — même
-    comportement qu'un compte de service réel au périmètre étroit."""
+def _check_property(property_id: str, *, allow_zero: bool = False) -> JSONResponse | None:
+    """400 on a non-numeric identifier, 403 on ANOTHER property: the mock's
+    token only has rights on the configured property — same behavior as a
+    real, narrowly-scoped service account."""
     if not property_id.isdigit():
-        return erreur(400, MESSAGE_403_PROPRIETE_INVALIDE.format(id=property_id))
-    admis = {settings.property_id, "0"} if zero_admis else {settings.property_id}
-    if property_id not in admis:
-        return erreur(403, MESSAGE_403_PROPRIETE)
+        return error(400, MESSAGE_403_INVALID_PROPERTY.format(id=property_id))
+    allowed = {settings.property_id, "0"} if allow_zero else {settings.property_id}
+    if property_id not in allowed:
+        return error(403, MESSAGE_403_PROPERTY)
     return None
 
 
-async def _corps_json(request: Request) -> dict[str, object] | JSONResponse:
-    """Le corps, au dialecte du transcodeur JSON du vendeur — relevé cas par cas.
+async def _json_body(request: Request) -> dict[str, object] | JSONResponse:
+    """The body, in the vendor's JSON transcoder dialect — recorded case by case.
 
-    Trois comportements que personne ne devine :
-      • un corps VIDE n'est pas une erreur de parsing, c'est un message vide —
-        la requête part en validation et échoue sur `A dateRange is required.` ;
-      • une racine qui n'est pas un objet (`null`, `[]`) a son propre message,
-        qui parle de « Root element » et non de syntaxe ;
-      • une syntaxe cassée rend un message MULTILIGNE : la raison, puis la
-        ligne fautive, puis un accent circonflexe sous la colonne. Un
-        consommateur qui journalise ce message verra trois lignes en prod.
+    Three behaviors nobody guesses:
+      • an EMPTY body isn't a parsing error, it's an empty message — the
+        request proceeds to validation and fails on
+        `A dateRange is required.`;
+      • a root that isn't an object (`null`, `[]`) has its own message,
+        which talks about "Root element" rather than syntax;
+      • broken syntax returns a MULTI-LINE message: the reason, then the
+        faulty line, then a caret under the column. A consumer logging this
+        message will see three lines in prod.
     """
-    brut = (await request.body()).decode("utf-8", errors="replace")
-    if not brut:
+    raw = (await request.body()).decode("utf-8", errors="replace")
+    if not raw:
         return {}
     try:
-        corps = json.loads(brut)
+        body = json.loads(raw)
     except ValueError as exc:
-        return erreur(400, _message_json_invalide(brut, exc))
-    if not isinstance(corps, dict):
-        return erreur(
+        return error(400, _invalid_json_message(raw, exc))
+    if not isinstance(body, dict):
+        return error(
             400,
             'Invalid JSON payload received. Unknown name "": Root element must be a message.',
         )
-    return corps
+    return body
 
 
-def _message_json_invalide(brut: str, exc: ValueError) -> str:
-    """Reproduit la FORME du message du transcodeur : raison, extrait, caret.
+def _invalid_json_message(raw: str, exc: ValueError) -> str:
+    """Reproduces the SHAPE of the transcoder's message: reason, excerpt, caret.
 
-    Le libellé exact de la raison vient du parseur C++ de protobuf (« Expected
-    : between key:value pair. ») et n'est pas reproductible depuis Python ;
-    c'est celui du parseur d'ici qui sert, et l'approximation est consignée
-    (`messages-erreurs-validation`). La géométrie — trois lignes, caret sous la
-    colonne fautive — est, elle, fidèle.
+    The exact wording of the reason comes from protobuf's C++ parser
+    ("Expected : between key:value pair.") and isn't reproducible from
+    Python; this one uses its own parser's, and the approximation is
+    recorded (`messages-erreurs-validation`). The geometry — three lines, a
+    caret under the faulty column — is, though, faithful.
     """
-    ligne, colonne = getattr(exc, "lineno", 1), getattr(exc, "colno", 1)
-    lignes = brut.splitlines() or [""]
-    extrait = lignes[ligne - 1] if 0 < ligne <= len(lignes) else ""
-    raison = str(getattr(exc, "msg", exc)).split(":")[0]
-    return f"Invalid JSON payload received. {raison}.\n{extrait}\n{' ' * (colonne - 1)}^"
+    line, column = getattr(exc, "lineno", 1), getattr(exc, "colno", 1)
+    lines = raw.splitlines() or [""]
+    excerpt = lines[line - 1] if 0 < line <= len(lines) else ""
+    reason = str(getattr(exc, "msg", exc)).split(":")[0]
+    return f"Invalid JSON payload received. {reason}.\n{excerpt}\n{' ' * (column - 1)}^"
 
 
-# Le pattern « :verbe » du transcodage gRPC marche tel quel dans Starlette : le
-# littéral `:runReport` suit le paramètre dans le MÊME segment d'URL, et le
-# backtracking de la regex compilée sépare correctement les deux. Vérifié
-# empiriquement avant d'écrire la moindre logique dessus.
+# The gRPC transcoding ":verb" pattern works as-is in Starlette: the
+# `:runReport` literal follows the parameter in the SAME URL segment, and the
+# compiled regex's backtracking correctly separates the two. Verified
+# empirically before writing any logic on top of it.
 @app.post(
     "/v1beta/properties/{property_id}:runReport",
     response_model=RunReportResponse,
-    responses=REPONSES_ERREUR,
-    openapi_extra=corps_requete(RunReportRequest),
+    responses=ERROR_RESPONSES,
+    openapi_extra=request_body(RunReportRequest),
     summary="Run a report",
 )
 async def run_report(request: Request, property_id: str) -> JSONResponse:
-    if (panne := _pre_traitement(request)) is not None:
-        return panne
-    if (refus := _verifier_bearer(request, METHODE_RPC["runReport"])) is not None:
-        return refus
-    if (refus := _verifier_propriete(property_id)) is not None:
-        return refus
-    corps = await _corps_json(request)
-    if isinstance(corps, JSONResponse):
-        return corps
-    engine.noter_corps(request.url.path, _resume_rapport(corps))
-    return _executer_protege(corps)
+    if (failure := _preprocess(request)) is not None:
+        return failure
+    if (denial := _check_bearer(request, RPC_METHOD["runReport"])) is not None:
+        return denial
+    if (denial := _check_property(property_id)) is not None:
+        return denial
+    body = await _json_body(request)
+    if isinstance(body, JSONResponse):
+        return body
+    engine.record_body(request.url.path, _report_summary(body))
+    return _execute_guarded(body)
 
 
-def _executer_protege(corps: dict[str, object]) -> JSONResponse:
+def _execute_guarded(body: dict[str, object]) -> JSONResponse:
     try:
-        return JSONResponse(executer_run_report(corps))
-    except ErreurRequete as exc:
-        return erreur(400, str(exc), details=exc.details)
-    except ErreurQuota as exc:
-        return erreur(429, str(exc))
+        return JSONResponse(execute_run_report(body))
+    except RequestError as exc:
+        return error(400, str(exc), details=exc.details)
+    except QuotaError as exc:
+        return error(429, str(exc))
 
 
-def _executer_batch(corps: dict[str, object]) -> JSONResponse:
-    demandes = corps.get("requests")
-    if not isinstance(demandes, list) or not demandes:
-        return erreur(400, "The batchRunReportsRequest must contain at least one runReportRequest.")
-    if len(demandes) > 5:
-        return erreur(
+def _execute_batch(body: dict[str, object]) -> JSONResponse:
+    requests = body.get("requests")
+    if not isinstance(requests, list) or not requests:
+        return error(400, "The batchRunReportsRequest must contain at least one runReportRequest.")
+    if len(requests) > 5:
+        return error(
             400,
             "Batch requests are limited to 5 requests.\n"
-            f"  This batch request contains {len(demandes)} requests.",
+            f"  This batch request contains {len(requests)} requests.",
         )
-    rapports = []
+    reports = []
     try:
-        for demande in demandes:
-            if not isinstance(demande, dict):
-                return erreur(400, "Invalid value for requests.")
-            rapports.append(executer_run_report(demande))
-    except ErreurRequete as exc:
-        return erreur(400, str(exc), details=exc.details)
-    except ErreurQuota as exc:
-        return erreur(429, str(exc))
-    return JSONResponse({"reports": rapports, "kind": "analyticsData#batchRunReports"})
+        for sub_request in requests:
+            if not isinstance(sub_request, dict):
+                return error(400, "Invalid value for requests.")
+            reports.append(execute_run_report(sub_request))
+    except RequestError as exc:
+        return error(400, str(exc), details=exc.details)
+    except QuotaError as exc:
+        return error(429, str(exc))
+    return JSONResponse({"reports": reports, "kind": "analyticsData#batchRunReports"})
 
 
 @app.post(
     "/v1beta/properties/{property_id}:batchRunReports",
     response_model=BatchRunReportsResponse,
-    responses=REPONSES_ERREUR,
-    openapi_extra=corps_requete(BatchRunReportsRequest),
+    responses=ERROR_RESPONSES,
+    openapi_extra=request_body(BatchRunReportsRequest),
     summary="Run up to 5 reports in one call",
 )
 async def batch_run_reports(request: Request, property_id: str) -> JSONResponse:
-    """≤ 5 sous-rapports ; l'auth, la propriété et le JSON se contrôlent UNE
-    fois au niveau du lot, puis chaque sous-rapport traverse le pipeline
-    complet — une sous-requête invalide fait échouer tout le lot."""
-    if (panne := _pre_traitement(request)) is not None:
-        return panne
-    if (refus := _verifier_bearer(request, METHODE_RPC["batchRunReports"])) is not None:
-        return refus
-    if (refus := _verifier_propriete(property_id)) is not None:
-        return refus
-    corps = await _corps_json(request)
-    if isinstance(corps, JSONResponse):
-        return corps
-    demandes = corps.get("requests")
-    if isinstance(demandes, list):
-        engine.noter_corps(
+    """<=5 sub-reports; auth, property and JSON are checked ONCE at the batch
+    level, then each sub-report goes through the full pipeline — one invalid
+    sub-request fails the whole batch."""
+    if (failure := _preprocess(request)) is not None:
+        return failure
+    if (denial := _check_bearer(request, RPC_METHOD["batchRunReports"])) is not None:
+        return denial
+    if (denial := _check_property(property_id)) is not None:
+        return denial
+    body = await _json_body(request)
+    if isinstance(body, JSONResponse):
+        return body
+    requests = body.get("requests")
+    if isinstance(requests, list):
+        engine.record_body(
             request.url.path,
-            {"requests": [_resume_rapport(d) for d in demandes if isinstance(d, dict)]},
+            {"requests": [_report_summary(d) for d in requests if isinstance(d, dict)]},
         )
-    return _executer_batch(corps)
+    return _execute_batch(body)
 
 
 @app.get(
     "/v1beta/properties/{property_id}/metadata",
     response_model=MetadataResponse,
-    responses=REPONSES_ERREUR,
+    responses=ERROR_RESPONSES,
     summary="Dimensions and metrics available on the property",
 )
 def metadata(request: Request, property_id: str) -> JSONResponse:
-    """L'auto-description de la propriété — générée DEPUIS le registre.
+    """The property's self-description — generated FROM the registry.
 
-    `properties/0/metadata` est admis, comme chez Google : le zéro désigne les
-    métadonnées communes à toutes les propriétés.
+    `properties/0/metadata` is accepted, like at Google: zero designates the
+    metadata common to all properties.
     """
-    if (panne := _pre_traitement(request)) is not None:
-        return panne
-    if (refus := _verifier_bearer(request, METHODE_RPC["getMetadata"])) is not None:
-        return refus
-    if (refus := _verifier_propriete(property_id, zero_admis=True)) is not None:
-        return refus
+    if (failure := _preprocess(request)) is not None:
+        return failure
+    if (denial := _check_bearer(request, RPC_METHOD["getMetadata"])) is not None:
+        return denial
+    if (denial := _check_property(property_id, allow_zero=True)) is not None:
+        return denial
     return JSONResponse(metadata_payload(property_id))
 
 
 @app.exception_handler(StarletteHTTPException)
-async def _erreur_http(request: Request, exc: StarletteHTTPException) -> Response:
-    """Le ROUTAGE ne parle pas google.rpc — il ne parle même pas JSON.
+async def _http_error(request: Request, exc: StarletteHTTPException) -> Response:
+    """ROUTING errors don't speak google.rpc — they don't even speak JSON.
 
-    Attesté sur le vrai service : `POST …:runNothing`, `GET /v1beta/pasUne`
-    et `GET …:runReport` (mauvais verbe) rendent TOUS les trois une page HTML
-    404 de la passerelle, `text/html; charset=UTF-8`. Il n'y a pas de 405 :
-    la méthode HTTP fait partie du motif de route, donc un mauvais verbe est
-    simplement une route qui n'existe pas.
+    Attested on the real service: `POST …:runNothing`, `GET /v1beta/notOne`
+    and `GET …:runReport` (wrong verb) ALL THREE render an HTML 404 page from
+    the gateway, `text/html; charset=UTF-8`. There's no 405: the HTTP method
+    is part of the route pattern, so a wrong verb is simply a route that
+    doesn't exist.
 
-    C'est le seul endroit de la surface où `reponse.json()` échoue — et un
-    consommateur doit l'apprendre ici, pas en prod.
+    This is the only place on the surface where `response.json()` fails —
+    and a consumer must learn it here, not in prod.
 
-    La page HTML est réservée aux chemins du VENDEUR : sur les affordances du
-    mock (`/health`, `/__admin`, `/__fixtures`), une faute de frappe doit rester
-    lisible pour un développeur, pas être déguisée en erreur Google.
+    The HTML page is reserved for VENDOR paths: on the mock's own
+    affordances (`/health`, `/__admin`, `/__fixtures`), a typo must stay
+    readable for a developer, not be disguised as a Google error.
 
-    Les autres codes passent tels quels : masquer un vrai bug derrière une
-    enveloppe polie serait pire que l'exposer.
+    Other codes pass through unchanged: hiding a real bug behind a polished
+    envelope would be worse than exposing it.
     """
     if exc.status_code in (404, 405):
-        if any(request.url.path.startswith(prefixe) for prefixe in CHEMINS_AFFORDANCE):
+        if any(request.url.path.startswith(prefix) for prefix in AFFORDANCE_PATHS):
             return JSONResponse(
                 status_code=404,
                 content={"error": f"unknown mock path {request.url.path}"},
@@ -367,57 +368,57 @@ async def _erreur_http(request: Request, exc: StarletteHTTPException) -> Respons
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
-# Monté SEULEMENT si activé : le plan de contrôle est ABSENT (pas simplement
-# interdit) quand GA_MOCK_ADMIN_ENABLED ne le demande pas — il n'apparaît ni
-# dans les routes ni dans le contrat OpenAPI publié.
+# Mounted ONLY if enabled: the control plane is ABSENT (not merely forbidden)
+# when GA_MOCK_ADMIN_ENABLED doesn't ask for it — it appears neither in the
+# routes nor in the published OpenAPI contract.
 if settings.admin_enabled:
     from .admin import router as admin_router
 
     app.include_router(admin_router)
 
 
-# ── Contrat publié ───────────────────────────────────────────────────────────
+# ── Published contract ───────────────────────────────────────────────────────
 
 
-def _references(objet: Any, refs: set[str]) -> None:
-    if isinstance(objet, dict):
-        ref = objet.get("$ref")
+def _references(obj: Any, refs: set[str]) -> None:
+    if isinstance(obj, dict):
+        ref = obj.get("$ref")
         if isinstance(ref, str) and ref.startswith("#/components/schemas/"):
             refs.add(ref.rsplit("/", 1)[1])
-        for valeur in objet.values():
-            _references(valeur, refs)
-    elif isinstance(objet, list):
-        for valeur in objet:
-            _references(valeur, refs)
+        for value in obj.values():
+            _references(value, refs)
+    elif isinstance(obj, list):
+        for value in obj:
+            _references(value, refs)
 
 
-def _elaguer_schemas_orphelins(schema: dict[str, Any]) -> None:
-    """Fermeture transitive des $ref depuis les chemins gardés : retirer un
-    chemin retire ses formes, y compris celles qu'il était seul à référencer."""
-    composants = schema.get("components", {}).get("schemas", {})
-    utiles: set[str] = set()
-    _references(schema["paths"], utiles)
+def _prune_orphan_schemas(schema: dict[str, Any]) -> None:
+    """Transitive closure of $refs from the kept paths: removing a path
+    removes its shapes too, including ones it alone referenced."""
+    components = schema.get("components", {}).get("schemas", {})
+    used: set[str] = set()
+    _references(schema["paths"], used)
     while True:
-        avant = len(utiles)
-        for nom in list(utiles):
-            if nom in composants:
-                _references(composants[nom], utiles)
-        if len(utiles) == avant:
+        before = len(used)
+        for name in list(used):
+            if name in components:
+                _references(components[name], used)
+        if len(used) == before:
             break
-    restants = {nom: composants[nom] for nom in sorted(utiles) if nom in composants}
-    if restants:
-        schema["components"]["schemas"] = restants
+    remaining = {name: components[name] for name in sorted(used) if name in components}
+    if remaining:
+        schema["components"]["schemas"] = remaining
     else:
         schema.pop("components", None)
 
 
 def contract_openapi() -> dict[str, Any]:
-    """Le contrat publié : les chemins du VENDEUR uniquement.
+    """The published contract: VENDOR paths only.
 
-    /health, /__fixtures et /__admin sont des affordances du mock — les faire
-    entrer dans le contrat serait mentir sur la surface Google. Les réponses
-    422 auto-documentées par FastAPI sont retirées pour la même raison : le
-    vendeur répond 400 INVALID_ARGUMENT, jamais un HTTPValidationError.
+    /health, /__fixtures and /__admin are mock affordances — including them
+    in the contract would misrepresent the Google surface. FastAPI's
+    auto-documented 422 responses are removed for the same reason: the
+    vendor answers 400 INVALID_ARGUMENT, never an HTTPValidationError.
     """
     schema = deepcopy(app.openapi())
     schema["info"] = {
@@ -433,13 +434,13 @@ def contract_openapi() -> dict[str, Any]:
         ),
     }
     schema["paths"] = {
-        chemin: operations
-        for chemin, operations in schema.get("paths", {}).items()
-        if chemin == "/token" or chemin.startswith("/v1beta/")
+        path: operations
+        for path, operations in schema.get("paths", {}).items()
+        if path == "/token" or path.startswith("/v1beta/")
     }
     for operations in schema["paths"].values():
         for operation in operations.values():
             if isinstance(operation, dict):
                 operation.get("responses", {}).pop("422", None)
-    _elaguer_schemas_orphelins(schema)
+    _prune_orphan_schemas(schema)
     return schema

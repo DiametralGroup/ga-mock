@@ -1,10 +1,10 @@
-"""ga-mock — un faux Google Analytics 4 qui parle le dialecte Data API v1beta.
+"""ga-mock — a fake Google Analytics 4 that speaks the Data API v1beta dialect.
 
-Deux modes d'usage, tous deux maintenus :
-  • in-process : `TestClient(ga_mock.app)` dans une suite de tests ;
-  • conteneur : image docker pour compose et les sidecars CI.
+Two usage modes, both maintained:
+  • in-process: `TestClient(ga_mock.app)` in a test suite;
+  • container: docker image for compose and CI sidecars.
 
-L'application que la stack interroge EST celle que les tests exercent.
+The application the stack talks to IS the one the tests exercise.
 """
 
 from .app import app, contract_openapi

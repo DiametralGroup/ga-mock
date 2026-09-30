@@ -1,110 +1,108 @@
 ---
 type: registry
 description: >
-  Registre des champs et comportements du mock NON attestés contre le service
-  GA4 Data v1beta. Chaque entrée du tuple UNVERIFIED_BEHAVIORS
-  (src/ga_mock/models.py) et chaque marqueur x-ga-confidence du contrat DOIVENT
-  figurer ici — un test l'impose.
+  Registry of mock fields and behaviors NOT attested against the real GA4 Data
+  v1beta service. Every entry of the UNVERIFIED_BEHAVIORS tuple
+  (src/ga_mock/models.py) and every x-ga-confidence marker in the contract
+  MUST appear here — a test enforces it.
 sources_of_truth:
   - https://developers.google.com/analytics/devguides/reporting/data/v1/rest
   - https://analyticsdata.googleapis.com/$discovery/rest?version=v1beta
   - https://developers.google.com/identity/protocols/oauth2/service-account
 review_triggers:
-  - un rejeu contre une vraie propriété GA4 (scripts/compare_real.py)
-  - toute montée de version de l'API v1beta
+  - a replay against a real GA4 property (scripts/compare_real.py)
+  - any v1beta API version bump
 update_policy: propose
 last_verified: 2026-09-02
 attested_elsewhere: docs/CONFORMITE-REELLE.md
 ---
 
-# Champs et comportements non vérifiés
+# Unverified fields and behaviors
 
-La règle vient de la spec insights360, reprise de boondmanager-mock : *ne pas
-inventer de champs d'API sans le dire*.
+The rule comes from the insights360 spec, carried over from
+boondmanager-mock: *never invent an API field without saying so*.
 
-Ce registre a été **vidé des deux tiers le 2026-09-02** par un rejeu complet
-contre une vraie propriété GA4 (`make compare` — 53 cas, 53 conformes ; 21
-messages d'erreur identiques au caractère près). Tout ce qui a été relevé est
-passé dans [CONFORMITE-REELLE.md](CONFORMITE-REELLE.md), qui fait désormais
-foi. Ce qui reste ci-dessous est ce qui n'a PAS pu être observé, ou ce que le
-mock fait sciemment autrement.
+This registry was **two-thirds emptied on 2026-09-02** by a full replay
+against a real GA4 property (`make compare` — 53 cases, 53 conforming; 21
+error messages identical character for character). Everything that was
+recorded moved to [CONFORMITE-REELLE.md](CONFORMITE-REELLE.md), which is now
+authoritative. What remains below is what could NOT be observed, or what the
+mock knowingly does differently.
 
-## Comportements (`UNVERIFIED_BEHAVIORS`)
+## Behaviors (`UNVERIFIED_BEHAVIORS`)
 
-### Non observable
+### Not observable
 
-- `messages-quota-429` — Les trois messages d'épuisement (`property per day`,
-  `property per hour`, `project per hour`) suivent le NOM du seau tel que le
-  document de découverte le définit. Vérifier coûterait d'épuiser pour de vrai
-  le quota d'une propriété réelle pour 24 h : ce ne sera pas fait.
-- `cout-jetons-interpole` — Le coût d'un rapport n'est pas forfaitaire, et le
-  modèle du mock (`1 + jours//60 + ⌈(dims×métriques − 3)/32⌉`) reproduit les
-  SEPT points mesurés (cf. CONFORMITE-REELLE §3) mais n'est pas la formule de
-  Google, qui dépend sûrement aussi de la cardinalité et de l'échantillonnage.
-- `total-avant-having` — `TOTAL` est calculé AVANT le `metricFilter`
-  (dédoublonnage exact des utilisateurs oblige). Les marqueurs
-  `RESERVED_TOTAL`/`RESERVED_MAX`/`RESERVED_MIN`, eux, sont attestés ; c'est
-  seulement l'interaction avec le having qui ne l'est pas.
-- `spine-keep-empty-rows` — `keepEmptyRows` complète le calendrier quand
-  TOUTES les dimensions sont de la famille date. La propriété de rejeu a des
-  données tous les jours : le cas « jour réellement vide » n'a pas pu être
-  distingué. Les autres familles de dimensions ne sont pas synthétisées.
-- `valeurs-vides-emptyfilter` — `emptyFilter` retient `""` et `(not set)`, les
-  deux seules valeurs NOMMÉES par la référence. Les autres marqueurs
-  parenthésés (`(none)`, `(direct)`, `(organic)`, `(data not available)`) sont
-  traités comme des valeurs réelles ; le classement du vendeur n'est pas
-  attesté.
-- `regle-semaine` — `week` : semaines dimanche-samedi, la semaine 01 commence
-  le 1ᵉʳ janvier. Le format (deux chiffres) est attesté ; la règle de bord
-  exacte des années à 54 « semaines » partielles ne l'est pas.
-- `fallback-session-campaign-name` — Replis par canal organique :
-  `(organic)`, `(direct)`, `(referral)`, `(not set)`. Le vocabulaire réel est
-  bien plus large (cf. `vocabulaire-sans-not-set`).
+- `messages-quota-429` — The three exhaustion messages (`property per day`,
+  `property per hour`, `project per hour`) follow the bucket NAME as the
+  discovery document defines it. Verifying it would mean actually exhausting
+  a real property's quota for 24h: this will not be done.
+- `cout-jetons-interpole` — A report's cost is not flat, and the mock's
+  model (`1 + days//60 + ⌈(dims×metrics − 3)/32⌉`) reproduces the SEVEN
+  measured points (see CONFORMITE-REELLE §3) but is not Google's formula,
+  which surely also depends on cardinality and sampling.
+- `total-avant-having` — `TOTAL` is computed BEFORE the `metricFilter`
+  (exact user dedup requires it). The `RESERVED_TOTAL`/`RESERVED_MAX`/
+  `RESERVED_MIN` markers themselves are attested; only the interaction with
+  the having clause is not.
+- `spine-keep-empty-rows` — `keepEmptyRows` completes the calendar when ALL
+  dimensions are date-family. The replay property has data every day: the
+  "genuinely empty day" case could not be distinguished. Other dimension
+  families are not synthesized.
+- `valeurs-vides-emptyfilter` — `emptyFilter` matches `""` and `(not set)`,
+  the only two values NAMED by the reference. Other parenthesized markers
+  (`(none)`, `(direct)`, `(organic)`, `(data not available)`) are treated as
+  real values; the vendor's classification is not attested.
+- `regle-semaine` — `week`: Sunday-Saturday weeks, week 01 starts on January 1st.
+  The format (two digits) is attested; the exact edge rule for years with 54
+  partial "weeks" is not.
+- `fallback-session-campaign-name` — Organic-channel fallbacks: `(organic)`,
+  `(direct)`, `(referral)`, `(not set)`. The real vocabulary is far broader
+  (see `vocabulaire-sans-not-set`).
 
-### Approximations et écarts assumés
+### Approximations and assumed gaps
 
-- `suggestions-did-you-mean` — Le service préfixe ses erreurs de champ d'une
-  suggestion (`Did you mean fileExtension? Field … is not a valid dimension.`).
-  Le mock ne la reproduit PAS : elle est calculée sur le catalogue COMPLET de
-  Google, qu'il ne sert pas. Le reste du message est identique au caractère
-  près, espaces compris.
-- `raison-parseur-json` — Sur un corps JSON syntaxiquement cassé, la GÉOMÉTRIE
-  du message est fidèle (raison, ligne fautive, caret sous la colonne) mais le
-  libellé de la raison vient du parseur Python, pas du parseur C++ de protobuf
+- `suggestions-did-you-mean` — The service prefixes its field errors with a
+  suggestion (`Did you mean fileExtension? Field … is not a valid
+  dimension.`). The mock does NOT reproduce it: it is computed against
+  Google's FULL catalog, which it does not serve. The rest of the message is
+  identical character for character, spaces included.
+- `raison-parseur-json` — On a syntactically broken JSON body, the message's
+  GEOMETRY is faithful (reason, offending line, caret under the column) but
+  the reason wording comes from Python's parser, not protobuf's C++ parser
   (`Expected : between key:value pair.`).
-- `ordre-par-defaut-secondaire` — Sans `orderBys`, le tri par première
-  métrique DÉCROISSANTE est attesté. Le tri secondaire (dimensions
-  croissantes) est un choix du mock : le vendeur ne promet aucun ordre à
-  égalité, et un mock ne doit jamais rendre l'ordre d'un dict.
-- `fanout-inter-portees` — `pagePath`/`eventName` éclatent la session en
-  unités ; les métriques de portée session restent des dénombrements distincts
-  exacts, mais l'attribution croisée (durée par page, événement par page) est
-  approchée. Le produit croisé page x événement ne reproduit pas l'attribution
-  réelle de GA4.
-- `vocabulaire-sans-not-set` — Le monde généré ne produit JAMAIS `(not set)`,
-  là où le service en rend sur presque toutes les dimensions
+- `ordre-par-defaut-secondaire` — With no `orderBys`, sorting by first metric
+  DESCENDING is attested. The secondary sort (dimensions ascending) is a
+  mock choice: the vendor makes no promise about tie order, and a mock must
+  never render a dict's iteration order.
+- `fanout-inter-portees` — `pagePath`/`eventName` split the session into units;
+  session-scope metrics stay exact distinct counts, but cross-attribution
+  (duration per page, event per page) is approximate. The page x event cross
+  product does not reproduce GA4's real attribution.
+- `vocabulaire-sans-not-set` — The generated world NEVER produces
+  `(not set)`, where the service renders it on almost every dimension
   (`deviceCategory`, `browser`, `operatingSystem`, `country`, `region`,
-  `city`, `newVsReturning`…), ni les valeurs rares du vrai catalogue
-  (`smart tv`, `Cross-network`, `AI Assistant`, `(data not available)`). Un
-  consommateur qui suppose `deviceCategory` dans `{desktop, mobile, tablet}`
-  passera ici et cassera en prod. Corriger demande de MODIFIER LE MONDE
-  généré, donc d'invalider les fixtures épinglées des consommateurs : décision
-  ouverte, cf. CONFORMITE-REELLE §5.
-- `retry-after-sur-429` — Le mock met un en-tête `Retry-After` sur les 429
-  injectés ; le service réel n'en met pas. Affordance de test assumée.
-- `aud-tolerant` — Le mock accepte toute audience se terminant par `/token`
-  au lieu d'exiger l'égalité stricte (derrière compose, le client vise un
-  autre hôte que celui que le serveur croit être). Le comportement réel EST
-  attesté, y compris son message : c'est un écart assumé, pas une
-  approximation — cf. CONFORMITE-REELLE §4.
-- `fenetre-assertion-double-horloge` — La fenêtre iat/exp de l'assertion est
-  acceptée si elle est valide contre l'horloge VIRTUELLE (ancre du monde) OU
-  contre l'horloge RÉELLE : un vrai client signe à l'heure réelle, les
-  assertions de test sont fabriquées contre l'ancre. Une assertion périmée
-  échoue contre les deux. Le vrai endpoint n'a évidemment qu'une horloge.
+  `city`, `newVsReturning`…), nor the real catalog's rare values (`smart tv`,
+  `Cross-network`, `AI Assistant`, `(data not available)`). A consumer that
+  assumes `deviceCategory` is in `{desktop, mobile, tablet}` will pass here
+  and break in prod. Fixing it requires MODIFYING THE GENERATED WORLD, hence
+  invalidating consumers' pinned fixtures: open decision, see
+  CONFORMITE-REELLE §5.
+- `retry-after-sur-429` — The mock sets a `Retry-After` header on injected
+  429s; the real service does not. Assumed test affordance.
+- `aud-tolerant` — The mock accepts any audience ending in `/token` instead
+  of requiring strict equality (behind compose, the client targets a
+  different host than the one the server believes it is). The real behavior
+  IS attested, including its message: this is an assumed gap, not an
+  approximation — see CONFORMITE-REELLE §4.
+- `fenetre-assertion-double-horloge` — The assertion's iat/exp window is accepted
+  if valid against either the VIRTUAL clock (world anchor) OR the REAL clock:
+  a real client signs at real time, test assertions are crafted against the
+  anchor. An expired assertion fails against both. The real endpoint
+  obviously has only one clock.
 
-## Marqueurs `x-ga-confidence` du contrat
+## `x-ga-confidence` markers in the contract
 
-- `PropertyQuota.tokensPerDay` — voir `cout-jetons-interpole`.
-- `RunReportResponse.totals` — voir `total-avant-having`.
-- `FilterLeaf.emptyFilter` — voir `valeurs-vides-emptyfilter`.
+- `PropertyQuota.tokensPerDay` — see `cout-jetons-interpole`.
+- `RunReportResponse.totals` — see `total-avant-having`.
+- `FilterLeaf.emptyFilter` — see `valeurs-vides-emptyfilter`.

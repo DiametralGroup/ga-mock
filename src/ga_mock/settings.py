@@ -1,10 +1,9 @@
-"""Configuration, lue exclusivement dans l'environnement.
+"""Configuration, read exclusively from the environment.
 
-Une seule mécanique pour docker compose, Deployment Kubernetes et sidecar
-Tekton : des variables `GA_MOCK_*`, lues à l'import et rechargeables par
-`reload()` (les tests changent l'environnement puis rechargent). Pas de
-fichier de configuration : un mock doit démarrer identique partout où on le
-pose.
+A single mechanism for docker compose, Kubernetes Deployment and the Tekton
+sidecar: `GA_MOCK_*` variables, read at import time and reloadable via
+`reload()` (tests change the environment then reload). No configuration
+file: a mock must start identically wherever it's deployed.
 """
 
 from __future__ import annotations
@@ -12,29 +11,29 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-EMAIL_SA_DEFAUT = "insights360@boreal-conseil-mock.iam.gserviceaccount.example"
+DEFAULT_SA_EMAIL = "insights360@boreal-conseil-mock.iam.gserviceaccount.example"
 
 
-def _booleen(brut: str) -> bool:
-    """Règle de l'écosystème (identique à boondmanager-mock) : 1/true/yes/on."""
-    return brut.strip().lower() in {"1", "true", "yes", "on"}
+def _boolean(raw: str) -> bool:
+    """Ecosystem rule (same as boondmanager-mock): 1/true/yes/on."""
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
 class Settings:
-    """Les défauts sont ceux du README ; l'environnement les écrase."""
+    """The defaults are those of the README; the environment overrides them."""
 
     seed: int = 42
     property_id: str = "424242001"
-    sa_email: str = EMAIL_SA_DEFAUT
+    sa_email: str = DEFAULT_SA_EMAIL
     freshness_hours: float = 48.0
     admin_enabled: bool = False
     admin_token: str = "mock-admin-token"
     quota_tokens_per_day: int = 200_000
     quota_tokens_per_hour: int = 40_000
-    # 35 % du seau horaire — la règle est écrite noir sur blanc dans le
-    # discovery Google : « Analytics Properties can use up to 35% of their
-    # tokens per project per hour », soit 14 000 pour une propriété standard.
+    # 35% of the hourly bucket — the rule is written in black and white in
+    # Google's discovery document: "Analytics Properties can use up to 35% of
+    # their tokens per project per hour", i.e. 14,000 for a standard property.
     quota_tokens_per_project_per_hour: int = 14_000
     rate_limit_after: int | None = None
     retry_after: int = 1
@@ -43,26 +42,26 @@ class Settings:
         env = os.environ
         self.seed = int(env.get("GA_MOCK_SEED", "42"))
         self.property_id = env.get("GA_MOCK_PROPERTY_ID", "424242001")
-        self.sa_email = env.get("GA_MOCK_SA_EMAIL", EMAIL_SA_DEFAUT)
+        self.sa_email = env.get("GA_MOCK_SA_EMAIL", DEFAULT_SA_EMAIL)
         self.freshness_hours = float(env.get("GA_MOCK_FRESHNESS_HOURS", "48"))
-        self.admin_enabled = _booleen(env.get("GA_MOCK_ADMIN_ENABLED", "false"))
+        self.admin_enabled = _boolean(env.get("GA_MOCK_ADMIN_ENABLED", "false"))
         self.admin_token = env.get("GA_MOCK_ADMIN_TOKEN", "mock-admin-token")
         self.quota_tokens_per_day = int(env.get("GA_MOCK_QUOTA_TOKENS_PER_DAY", "200000"))
         self.quota_tokens_per_hour = int(env.get("GA_MOCK_QUOTA_TOKENS_PER_HOUR", "40000"))
         self.quota_tokens_per_project_per_hour = int(
             env.get("GA_MOCK_QUOTA_TOKENS_PER_PROJECT_PER_HOUR", "14000")
         )
-        brut = env.get("GA_MOCK_RATE_LIMIT_AFTER", "").strip()
-        self.rate_limit_after = int(brut) if brut else None
+        raw = env.get("GA_MOCK_RATE_LIMIT_AFTER", "").strip()
+        self.rate_limit_after = int(raw) if raw else None
         self.retry_after = int(env.get("GA_MOCK_RETRY_AFTER", "1"))
 
 
 settings = Settings()
 settings.reload()
 
-# Configuration de la PROPRIÉTÉ, pas du serveur : figée comme le monde généré.
-# Les changer changerait les réponses — donc le contrat de fait des tests
-# consommateurs. Pas de variable d'environnement pour ça, c'est voulu.
+# PROPERTY configuration, not server configuration: fixed like the generated
+# world. Changing it would change the responses — hence the de facto contract
+# of consumer tests. No environment variable for this, on purpose.
 CURRENCY_CODE = "EUR"
 TIME_ZONE = "Europe/Paris"
-BEARER_TTL_SECONDES = 3600
+BEARER_TTL_SECONDS = 3600

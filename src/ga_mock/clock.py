@@ -1,15 +1,15 @@
-"""Horloge virtuelle ANCRÉE.
+"""Virtual, ANCHORED clock.
 
-boondmanager-mock base son horloge sur `time.time() + offset` ; ici la base
-est FIXE, parce que `today`/`yesterday`/`NdaysAgo` font partie de la surface
-d'API v1beta : un « today » wall-clock sortirait du monde généré (qui s'arrête
-à l'ancre) et renverrait zéro ligne pour toujours. L'ancre reprend la date de
-boondmanager-mock (15 juillet 2026) pour que les jointures BI inter-sources
-tombent juste en dev — et rend chaque réponse déterministe à l'octet près.
+boondmanager-mock bases its clock on `time.time() + offset`; here the base is
+FIXED, because `today`/`yesterday`/`NdaysAgo` are part of the v1beta API
+surface: a wall-clock "today" would fall outside the generated world (which
+stops at the anchor) and would return zero rows forever. The anchor reuses
+boondmanager-mock's date (July 15, 2026) so that cross-source BI joins line up
+in dev — and it makes every response deterministic down to the byte.
 
-Le décalage (`horloge.offset_secondes`) est piloté par /__admin/clock et remis
-à zéro par `state.reset()` : avancer l'horloge fait vieillir ENSEMBLE les
-dates relatives, l'expiration des bearers et la visibilité de fraîcheur.
+The offset (`clock.offset_seconds`) is driven by /__admin/clock and reset to
+zero by `state.reset()`: advancing the clock ages relative dates, bearer
+expiry and freshness visibility TOGETHER.
 """
 
 from __future__ import annotations
@@ -17,47 +17,47 @@ from __future__ import annotations
 import re
 from datetime import UTC, date, datetime, timedelta, timezone
 
-ANCRE = datetime(2026, 7, 15, 14, 30, 0, tzinfo=timezone(timedelta(hours=2)))
+ANCHOR = datetime(2026, 7, 15, 14, 30, 0, tzinfo=timezone(timedelta(hours=2)))
 
-_MOTIF_ISO = re.compile(r"\d{4}-\d{2}-\d{2}")
-_MOTIF_RELATIF = re.compile(r"(\d+)daysAgo")
+_ISO_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
+_RELATIVE_PATTERN = re.compile(r"(\d+)daysAgo")
 
 
-class Horloge:
+class Clock:
     def __init__(self) -> None:
-        self.offset_secondes: float = 0.0
+        self.offset_seconds: float = 0.0
 
 
-horloge = Horloge()
+clock = Clock()
 
 
-def fuseau_paris(utc: datetime) -> timezone:
-    """Règle simplifiée reprise de boondmanager-mock : avril-octobre = +02:00,
-    sinon +01:00. Fausse de quelques jours autour des bascules DST réelles —
-    assumé : aucune métrique du mock ne dépend de l'heure exacte de bascule."""
+def paris_timezone(utc: datetime) -> timezone:
+    """Simplified rule reused from boondmanager-mock: April-October = +02:00,
+    otherwise +01:00. Off by a few days around real DST switchovers —
+    assumed: no mock metric depends on the exact switchover time."""
     return timezone(timedelta(hours=2 if 4 <= utc.month <= 10 else 1))
 
 
 def virtual_now() -> datetime:
-    utc = (ANCRE + timedelta(seconds=horloge.offset_secondes)).astimezone(UTC)
-    return utc.astimezone(fuseau_paris(utc))
+    utc = (ANCHOR + timedelta(seconds=clock.offset_seconds)).astimezone(UTC)
+    return utc.astimezone(paris_timezone(utc))
 
 
 def virtual_today() -> date:
     return virtual_now().date()
 
 
-def resoudre_date(brut: str) -> date:
-    """Grammaire des DateRange v1beta : `YYYY-MM-DD`, `today`, `yesterday`,
-    `NdaysAgo` — sensible à la casse, comme le vrai service."""
-    texte = brut.strip()
-    if texte == "today":
+def resolve_date(raw: str) -> date:
+    """DateRange v1beta grammar: `YYYY-MM-DD`, `today`, `yesterday`,
+    `NdaysAgo` — case-sensitive, like the real service."""
+    text = raw.strip()
+    if text == "today":
         return virtual_today()
-    if texte == "yesterday":
+    if text == "yesterday":
         return virtual_today() - timedelta(days=1)
-    relatif = _MOTIF_RELATIF.fullmatch(texte)
-    if relatif:
-        return virtual_today() - timedelta(days=int(relatif.group(1)))
-    if _MOTIF_ISO.fullmatch(texte):
-        return date.fromisoformat(texte)
-    raise ValueError(brut)
+    relative = _RELATIVE_PATTERN.fullmatch(text)
+    if relative:
+        return virtual_today() - timedelta(days=int(relative.group(1)))
+    if _ISO_PATTERN.fullmatch(text):
+        return date.fromisoformat(text)
+    raise ValueError(raw)

@@ -5,8 +5,8 @@ description = "Google Analytics 4 Data API (v1beta) mock — deterministic sessi
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
-# Le périmètre des dépendances est une décision, pas un accident : FastAPI et
-# uvicorn, rien d'autre. La crypto (RS256) est faite en stdlib — cf. rsa_min.py.
+# The scope of dependencies is a decision, not an accident: FastAPI and
+# uvicorn, nothing else. The crypto (RS256) is done in stdlib — see rsa_min.py.
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
@@ -40,8 +40,8 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PL", "ARG"]
-# PLR0913/PLR2004 : un mock manipule des seuils et des formes verbeuses par
-# nature ; PLC0415 : les imports différés sont délibérés (montage conditionnel).
+# PLR0913/PLR2004: a mock inherently deals with thresholds and verbose
+# shapes; PLC0415: deferred imports are deliberate (conditional mounting).
 ignore = ["PLR0913", "PLR2004", "PLC0415"]
 
 [tool.mypy]
